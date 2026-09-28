@@ -83,14 +83,10 @@ class AuthState(rx.State):
 
     def _current_origin(self) -> str:
         """Return the full origin URL (with protocol) for redirect after login/logout."""
-        host = getattr(self.router.page, "host", "") or ""
-        if not host:
-            return "http://localhost:3000"
-        if host.startswith("http://") or host.startswith("https://"):
-            return host
-        if "localhost" in host or "127.0.0.1" in host:
-            return f"http://{host}"
-        return f"https://{host}"
+        origin = self.router.url.origin or ""
+        if origin and origin != "://":
+            return origin
+        return "http://localhost:3000"
 
     @rx.event
     async def load_auth(self):
@@ -102,7 +98,7 @@ class AuthState(rx.State):
             self._load_dev_user()
             return
 
-        cookie_header = self.router.headers.get("cookie", "")
+        cookie_header = self.router.headers.cookie
         token = _extract_cookie(cookie_header, DDNS_AUTH_COOKIE)
         if not token:
             self.auth_status = "anonymous"
