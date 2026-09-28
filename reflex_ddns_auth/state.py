@@ -61,6 +61,7 @@ class AuthState(rx.State):
     user_avatar: str = ""
     auth_status: str = "anonymous"
     _auth_loaded: bool = False
+    _last_token: str = ""
     _is_approved: bool = False
 
     @rx.var
@@ -90,28 +91,32 @@ class AuthState(rx.State):
 
     @rx.event
     async def load_auth(self):
-        if self._auth_loaded:
-            return
-        self._auth_loaded = True
-
+        # Re-read on every page load: login/logout on Relack changes the cookie
+        # while this tab's state persists.
         if DDNS_AUTH_DEV_USER:
+            self._auth_loaded = True
             self._load_dev_user()
             return
 
         cookie_header = self.router.headers.cookie
         token = _extract_cookie(cookie_header, DDNS_AUTH_COOKIE)
+        if self._auth_loaded and token == self._last_token:
+            return
+        self._auth_loaded = True
+        self._last_token = token
+
         if not token:
-            self.auth_status = "anonymous"
+            self._set_anonymous()
             return
 
         if _jwt is None:
             logger.warning("PyJWT not installed — cannot verify ddns_auth cookie")
-            self.auth_status = "anonymous"
+            self._set_anonymous()
             return
 
         if not DDNS_AUTH_SECRET:
             logger.warning("DDNS_AUTH_SECRET not set — cannot verify ddns_auth cookie")
-            self.auth_status = "anonymous"
+            self._set_anonymous()
             return
 
         try:
@@ -123,10 +128,17 @@ class AuthState(rx.State):
             self.auth_status = "authenticated"
         except _jwt.ExpiredSignatureError:
             logger.debug("ddns_auth cookie expired")
-            self.auth_status = "anonymous"
+            self._set_anonymous()
         except _jwt.InvalidTokenError:
             logger.debug("ddns_auth cookie invalid")
-            self.auth_status = "anonymous"
+            self._set_anonymous()
+
+    def _set_anonymous(self):
+        self.user_email = ""
+        self.user_name = ""
+        self.user_avatar = ""
+        self._is_approved = False
+        self.auth_status = "anonymous"
 
     @rx.event
     async def reload_auth(self):
