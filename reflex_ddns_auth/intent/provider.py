@@ -38,8 +38,12 @@ class IntentPage(rx.State):
 
     @rx.var
     def is_active(self) -> bool:
-        """True when embedded by a trusted caller that is waiting for an answer."""
-        return self.call_id != ""
+        """True when embedded by a trusted caller that is waiting for an answer.
+
+        Also requires being on the intent page itself: this state can outlive the
+        dialog (e.g. a session resumed elsewhere) and must not leak into other pages.
+        """
+        return self.call_id != "" and self.router.url.path == intent_route(self.action)
 
     @rx.event
     def init(self, action: str):

@@ -138,6 +138,15 @@ def host_bridge_js(inbox_button_id: str, close_button_id: str, frame_id: str) ->
     const btn = document.getElementById({json.dumps(close_button_id)});
     if (btn) btn.click();
   }});
+  // A same-origin intent iframe shares this tab's sessionStorage, where Reflex
+  // keeps its client token. The backend hands the iframe a fresh token (it looks
+  // like a duplicated tab) and the iframe stores it, so after a reload this page
+  // would resume the iframe's session. Storage events only reach *other*
+  // documents, so put our token back whenever someone else changes it.
+  window.addEventListener("storage", (ev) => {{
+    if (ev.storageArea !== window.sessionStorage || ev.key !== "token" || !ev.oldValue) return;
+    if (ev.newValue !== ev.oldValue) window.sessionStorage.setItem("token", ev.oldValue);
+  }});
 }})()"""
 
 
