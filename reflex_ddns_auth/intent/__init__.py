@@ -9,7 +9,11 @@ Provider (the app that owns the page):
 Caller:
 
     rx.button("Profile", on_click=Intent.start("relack", "profile.view", user=email))
+    rx.button("Pick", on_click=Intent.start("relack", "people.pick", on_result=S.picked))
     intent_host()  # once per page
+
+``on_result`` receives the provider's answer; ``on_cancel`` runs when the
+dialog closes without one.
 """
 
 from reflex_ddns_auth.intent.host import Intent, IntentState, intent_host

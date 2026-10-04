@@ -4,8 +4,13 @@
 
     rx.button("Profile", on_click=Intent.start("relack", "profile.view", user=email))
     rx.button("Pick", on_click=Intent.start("relack", "user.pick", on_result=MyState.on_pick))
+    rx.button("Call", on_click=Intent.start("livekit", "call.join", on_cancel=MyState.on_left, room=rid))
 
     intent_host()  # once per page
+
+``on_result`` runs when the provider finishes with data; ``on_cancel`` runs when
+the dialog closes without a result (provider cancel, the × button, a click
+outside, Escape, or another intent replacing it).
 """
 
 import json
@@ -29,6 +34,9 @@ from reflex_ddns_auth.intent.protocol import (
 FRAME_ID = "ddns-intent-frame"
 INBOX_BUTTON_ID = "ddns-intent-inbox"
 CLOSE_BUTTON_ID = "ddns-intent-close"
+# Features the dialog iframe may use (Permissions Policy). A cross-origin iframe
+# cannot even prompt for the microphone or autoplay sound unless delegated.
+DEFAULT_ALLOW = "autoplay; microphone; camera; clipboard-write"
 
 
 def _resolve_handler(key: str) -> EventHandler | None:
@@ -56,6 +64,7 @@ class IntentState(rx.State):
     _call_id: str = ""
     _expected_origin: str = ""
     _result_key: str = ""
+    _cancel_key: str = ""
 
     def _close(self):
         self.is_open = False
@@ -63,9 +72,20 @@ class IntentState(rx.State):
         self._call_id = ""
         self._expected_origin = ""
         self._result_key = ""
+        self._cancel_key = ""
+
+    def _dismiss(self):
+        """Close without a result; returns the caller's ``on_cancel`` event, if any."""
+        handler = _resolve_handler(self._cancel_key) if self.is_open else None
+        self._close()
+        return handler({}) if handler is not None else None
 
     @rx.event
-    def open_intent(self, app: str, action: str, params: dict, result_key: str = ""):
+    def open_intent(
+        self, app: str, action: str, params: dict, result_key: str = "", cancel_key: str = ""
+    ):
+        # Only one dialog at a time: a replaced dialog counts as cancelled.
+        dismissed = self._dismiss()
         base = app_url(app)
         call_id = secrets.token_hex(8)
         query = {k: "" if v is None else str(v) for k, v in params.items()}
@@ -76,12 +96,14 @@ class IntentState(rx.State):
         self._call_id = call_id
         self._expected_origin = origin_of(base)
         self._result_key = result_key
+        self._cancel_key = cancel_key
         self.is_open = True
-        return rx.call_script(host_bridge_js(INBOX_BUTTON_ID, CLOSE_BUTTON_ID, FRAME_ID))
+        bridge = rx.call_script(host_bridge_js(INBOX_BUTTON_ID, CLOSE_BUTTON_ID, FRAME_ID))
+        return [dismissed, bridge] if dismissed is not None else bridge
 
     @rx.event
     def close(self):
-        self._close()
+        return self._dismiss()
 
     @rx.event
     def receive(self, raw: str):
@@ -97,7 +119,7 @@ class IntentState(rx.State):
 
         event = message.get("event")
         if event == "cancel":
-            self._close()
+            return self._dismiss()
         elif event == "result":
             handler = _resolve_handler(self._result_key)
             self._close()
@@ -108,14 +130,23 @@ class IntentState(rx.State):
 
 class Intent:
     @staticmethod
-    def start(app: str, action: str, on_result: EventHandler | None = None, **params: Any) -> EventSpec:
+    def start(
+        app: str,
+        action: str,
+        on_result: EventHandler | None = None,
+        on_cancel: EventHandler | None = None,
+        **params: Any,
+    ) -> EventSpec:
         """Event that opens ``action`` of ``app`` in the intent dialog.
 
         ``params`` may be plain values or state Vars. ``on_result`` is an event
-        handler taking one ``dict`` argument, called when the intent finishes.
+        handler taking one ``dict`` argument, called when the intent finishes;
+        ``on_cancel`` (same signature, called with ``{}``) when it closes without
+        a result.
         """
         result_key = format_event_handler(on_result) if on_result is not None else ""
-        return IntentState.open_intent(app, action, params, result_key)
+        cancel_key = format_event_handler(on_cancel) if on_cancel is not None else ""
+        return IntentState.open_intent(app, action, params, result_key, cancel_key)
 
 
 def _close_button() -> rx.Component:
@@ -141,8 +172,11 @@ def _close_button() -> rx.Component:
     )
 
 
-def intent_host() -> rx.Component:
-    """Dialog container for intents. Place once on every page that starts intents."""
+def intent_host(allow: str = DEFAULT_ALLOW) -> rx.Component:
+    """Dialog container for intents. Place once on every page that starts intents.
+
+    ``allow`` is the iframe's Permissions Policy (features the provider may use).
+    """
     return rx.fragment(
         # Hidden buttons the JS bridge clicks to hand events to Python.
         rx.el.button(
@@ -162,6 +196,7 @@ def intent_host() -> rx.Component:
                         id=FRAME_ID,
                         src=IntentState.src,
                         title="Dialog",
+                        allow=allow,
                         style={
                             "display": "block",
                             "width": "100%",
