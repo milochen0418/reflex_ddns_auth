@@ -9,7 +9,18 @@ The provider talks back with ``window.parent.postMessage``:
     {"type": "ddns-intent", "v": 1, "id": <id>, "event": <event>, "data": <any>}
 
 where ``event`` is one of ``ready``, ``resize`` (data = height in px),
-``result`` (data = JSON object) or ``cancel``.
+``result`` (data = JSON object) or ``cancel`` (data = optional details;
+``{"via": "escape"}`` when the user pressed Escape). A host page may hold
+several dialogs at once: each iframe carries its id in ``data-intent-id``,
+and a message counts only when it comes from the iframe with its ``id``.
+
+Parameters too sensitive for the URL (logs, history) travel the other way:
+with ``_intent_wait=1`` in the URL, the provider holds ``on_open`` until the
+host answers its ``ready`` with
+
+    {"type": "ddns-intent", "v": 1, "id": <id>, "event": "params", "data": {...}}
+
+posted to the provider's origin only.
 """
 
 import json
@@ -21,6 +32,7 @@ PROTOCOL_VERSION = 1
 
 ID_PARAM = "_intent_id"
 ORIGIN_PARAM = "_intent_origin"
+WAIT_PARAM = "_intent_wait"
 
 ZONE = os.environ.get("DDNS_INTENT_ZONE", "reflex-ddns.com")
 TRUST_LOCALHOST = os.environ.get("DDNS_INTENT_TRUST_LOCALHOST", "") == "1"
@@ -106,29 +118,46 @@ def _js_trust_check() -> str:
 }})"""
 
 
-def host_bridge_js(inbox_button_id: str, close_button_id: str, frame_id: str) -> str:
-    """Installs (once) the host-side listener.
+def host_bridge_js(inbox_button_id: str, close_button_id: str) -> str:
+    """Installs (once) the host-side listener for all dialogs of the page.
 
-    Resize messages are applied to the iframe directly; everything else is
-    queued in ``window.__ddnsIntentInbox`` and delivered to Python by clicking
-    a hidden button.
+    Resize messages are applied to the sending iframe directly; everything
+    else is queued in ``window.__ddnsIntentInbox`` and delivered to Python by
+    clicking a hidden button.
     """
     return f"""(() => {{
   if (window.__ddnsIntentHost) return;
   window.__ddnsIntentHost = true;
   window.__ddnsIntentInbox = [];
+  window.__ddnsIntentPending = window.__ddnsIntentPending || {{}};
   const trusted = {_js_trust_check()};
+  const frameOf = (source) => {{
+    for (const f of document.querySelectorAll("iframe[data-intent-id]")) {{
+      if (f.contentWindow === source) return f;
+    }}
+    return null;
+  }};
   window.addEventListener("message", (ev) => {{
     const m = ev.data;
     if (!m || m.type !== {json.dumps(MESSAGE_TYPE)} || !trusted(ev.origin)) return;
-    const frame = document.getElementById({json.dumps(frame_id)});
-    if (!frame || ev.source !== frame.contentWindow) return;
+    // Only the dialog's own iframe may speak for its id.
+    const frame = frameOf(ev.source);
+    if (!frame || frame.dataset.intentId !== m.id) return;
     if (m.event === "resize") {{
       const h = Math.max(120, Math.min(Number(m.data) || 0, window.innerHeight * 0.9));
       frame.style.height = h + "px";
       return;
     }}
-    if (m.event === "ready") return;
+    if (m.event === "ready") {{
+      // Hand over the private params of this dialog, to its origin only.
+      const p = window.__ddnsIntentPending[m.id];
+      if (p && p.origin === ev.origin) {{
+        delete window.__ddnsIntentPending[m.id];
+        frame.contentWindow.postMessage(
+          {{type: {json.dumps(MESSAGE_TYPE)}, v: {PROTOCOL_VERSION}, id: m.id, event: "params", data: p.data}}, p.origin);
+      }}
+      return;
+    }}
     window.__ddnsIntentInbox.push({{id: m.id, event: m.event, data: m.data ?? null, origin: ev.origin}});
     const btn = document.getElementById({json.dumps(inbox_button_id)});
     if (btn) btn.click();
@@ -150,11 +179,23 @@ def host_bridge_js(inbox_button_id: str, close_button_id: str, frame_id: str) ->
 }})()"""
 
 
-def provider_bridge_js(parent_origin: str, call_id: str, root_id: str) -> str:
+def host_pending_params_js(call_id: str, origin: str, data: dict) -> str:
+    """Remembers the private params the host bridge sends on the dialog's ``ready``."""
+    pending = json.dumps({"origin": origin, "data": data})
+    return f"(window.__ddnsIntentPending = window.__ddnsIntentPending || {{}})[{json.dumps(call_id)}] = {pending};"
+
+
+def provider_bridge_js(
+    parent_origin: str, call_id: str, root_id: str, params_button_id: str, wait: bool = False
+) -> str:
     """Installs (once) the provider-side bridge inside the iframe.
 
     Exposes ``window.__ddnsIntentPage.post(event, data)``, reports the content
-    height whenever it changes, and turns Escape into ``cancel``.
+    height whenever it changes, turns Escape into ``cancel`` (``via: "escape"``,
+    which a host may take as "minimize" for a keep-alive dialog), and delivers the
+    host's ``params`` message to Python by clicking a hidden button. With
+    ``wait`` (private params expected), ``ready`` is repeated until they come:
+    the host's listener may start after this page, e.g. when the host reloads.
     """
     return f"""(() => {{
   if (window.__ddnsIntentPage || window.parent === window) return;
@@ -165,17 +206,38 @@ def provider_bridge_js(parent_origin: str, call_id: str, root_id: str) -> str:
   window.__ddnsIntentPage = {{post}};
   let last = 0;
   let ready = false;
+  let gotParams = false;
   const watch = () => {{
     const root = document.getElementById({json.dumps(root_id)});
     if (!root) {{ requestAnimationFrame(watch); return; }}
     new ResizeObserver(() => {{
       const h = Math.ceil(root.getBoundingClientRect().height);
       if (h !== last) {{ last = h; post("resize", h); }}
-      if (!ready) {{ ready = true; post("ready"); }}
+      if (!ready) {{
+        ready = true;
+        post("ready");
+        if ({json.dumps(wait)}) {{
+          let tries = 0;
+          const again = setInterval(() => {{
+            if (gotParams || ++tries > 60) {{ clearInterval(again); return; }}
+            post("ready");
+          }}, 1000);
+        }}
+      }}
     }}).observe(root);
   }};
   watch();
-  window.addEventListener("keydown", (ev) => {{ if (ev.key === "Escape") post("cancel"); }});
+  window.addEventListener("keydown", (ev) => {{ if (ev.key === "Escape") post("cancel", {{via: "escape"}}); }});
+  window.__ddnsIntentPageInbox = [];
+  window.addEventListener("message", (ev) => {{
+    const m = ev.data;
+    if (ev.source !== window.parent || ev.origin !== origin) return;
+    if (!m || m.type !== {json.dumps(MESSAGE_TYPE)} || m.id !== id || m.event !== "params") return;
+    gotParams = true;
+    window.__ddnsIntentPageInbox.push(m.data ?? null);
+    const btn = document.getElementById({json.dumps(params_button_id)});
+    if (btn) btn.click();
+  }});
 }})()"""
 
 
