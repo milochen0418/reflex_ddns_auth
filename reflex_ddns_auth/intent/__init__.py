@@ -23,7 +23,8 @@ do); ``Intent.choose_app`` only asks, and hands ``{"app": ...}`` to its
 ``on_result``, so that everyone joining the same session (a call) can then
 start that very app by name. ``private`` params stay out of the URL. Several
 dialogs can be open: one in front, and ``keep_alive`` ones minimized to a tray
-where they keep running.
+where they keep running; dragged up from there, one becomes a small
+picture-in-picture window.
 """
 
 from reflex_ddns_auth.intent.host import Intent, IntentState, install_intent_host, intent_host

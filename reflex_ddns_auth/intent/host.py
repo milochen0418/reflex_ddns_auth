@@ -27,6 +27,8 @@ bottom left and keeps running (e.g. a call goes on while a picker is open),
 until the user brings it back or closes it. Clicking outside or Escape also
 minimize a keep-alive dialog; its × closes it. ``single=True`` allows one
 dialog of the action at a time (opening it again closes the previous one).
+A minimized dialog's pill can be dragged along the bottom, or up into a small
+picture-in-picture window of the dialog (see ``tray``).
 
 ``on_result`` runs when the provider finishes with data. ``on_cancel`` runs when
 the dialog closes without a result, with ``{"reason": ..., "action": ...}``:
@@ -57,11 +59,13 @@ from reflex_ddns_auth.intent.protocol import (
     origin_of,
 )
 from reflex_ddns_auth.intent.registry import resolve_providers
+from reflex_ddns_auth.intent.tray import tray_js
 
 # id of the iframe of the dialog in front; the others get FRAME_ID-<dialog id>.
 FRAME_ID = "ddns-intent-frame"
 INBOX_BUTTON_ID = "ddns-intent-inbox"
 CLOSE_BUTTON_ID = "ddns-intent-close"
+SHOW_BUTTON_ID = "ddns-intent-show"
 # Features the dialog iframe may use (Permissions Policy). A cross-origin iframe
 # cannot even prompt for the microphone or autoplay sound unless delegated.
 DEFAULT_ALLOW = "autoplay; microphone; camera; clipboard-write"
@@ -84,8 +88,13 @@ def _resolve_handler(key: str) -> EventHandler | None:
     return state_cls.event_handlers.get(name)
 
 
+def _host_js() -> str:
+    """The page's side of the dialogs: the message bridge, and dragging minimized ones."""
+    return host_bridge_js(INBOX_BUTTON_ID, CLOSE_BUTTON_ID) + ";" + tray_js(SHOW_BUTTON_ID)
+
+
 def _bridge() -> EventSpec:
-    return rx.call_script(host_bridge_js(INBOX_BUTTON_ID, CLOSE_BUTTON_ID))
+    return rx.call_script(_host_js())
 
 
 class IntentState(rx.State):
@@ -203,7 +212,7 @@ class IntentState(rx.State):
             },
         }
         self.active = dialog_id
-        script = host_bridge_js(INBOX_BUTTON_ID, CLOSE_BUTTON_ID)
+        script = _host_js()
         if private:
             script += ";" + host_pending_params_js(dialog_id, origin, private)
         return rx.call_script(script)
@@ -296,7 +305,7 @@ class IntentState(rx.State):
         pages load again, so listen to them and resend their private params."""
         if not self.dialogs:
             return
-        script = host_bridge_js(INBOX_BUTTON_ID, CLOSE_BUTTON_ID)
+        script = _host_js()
         for dialog in self.dialogs:
             meta = self._meta.get(dialog["id"], {})
             if dialog["kind"] == "frame" and meta.get("private"):
@@ -469,6 +478,7 @@ def _dialog_controls(dialog: rx.Var) -> rx.Component:
                 on_click=IntentState.minimize(dialog["id"]),
                 aria_label="Minimize",
                 title="Minimize",
+                custom_attrs={"data-intent-control": ""},
                 style={**_ROUND_BUTTON, "right": "46px"},
             ),
         ),
@@ -477,6 +487,7 @@ def _dialog_controls(dialog: rx.Var) -> rx.Component:
             on_click=IntentState.close_dialog(dialog["id"]),
             aria_label="Close",
             title="Close",
+            custom_attrs={"data-intent-control": ""},
             style={**_ROUND_BUTTON, "right": "10px"},
         ),
     )
@@ -536,6 +547,7 @@ def _dialog(dialog: rx.Var, allow: str) -> rx.Component:
                 ),
             ),
             on_click=rx.stop_propagation,
+            custom_attrs={"data-intent-box": ""},
             style={
                 "position": "relative",
                 "width": "min(800px, 94vw)",
@@ -546,9 +558,11 @@ def _dialog(dialog: rx.Var, allow: str) -> rx.Component:
                 "boxShadow": "0 24px 64px rgba(15, 23, 42, 0.35)",
             },
         ),
+        # Resizes the dialog's picture-in-picture window (see tray), shown only there.
+        rx.el.div(title="Resize", custom_attrs={"data-intent-resize": dialog["id"]}, style={"display": "none"}),
         key=dialog["id"],
         on_click=IntentState.close,
-        custom_attrs={"data-intent-dialog": dialog["id"]},
+        custom_attrs={"data-intent-dialog": dialog["id"], "data-intent-front": rx.cond(in_front, "1", "")},
         style={
             "position": "fixed",
             "inset": "0",
@@ -608,6 +622,7 @@ def _tray_item(dialog: rx.Var) -> rx.Component:
             },
         ),
         key=dialog["id"],
+        custom_attrs={"data-intent-tray-item": dialog["id"]},
         style={
             "display": "flex",
             "alignItems": "center",
@@ -632,6 +647,11 @@ def _host(allow: str) -> rx.Component:
             style={"display": "none"},
         ),
         rx.el.button(id=CLOSE_BUTTON_ID, on_click=IntentState.close, style={"display": "none"}),
+        rx.el.button(
+            id=SHOW_BUTTON_ID,
+            on_click=IntentState.show(rx.Var("window.__ddnsIntentShowId ?? ''", _var_type=str)),
+            style={"display": "none"},
+        ),
         rx.foreach(IntentState.dialogs, lambda dialog: _dialog(dialog, allow)),
         # Minimized dialogs, above the dialog in front so they can be brought back.
         rx.el.div(
