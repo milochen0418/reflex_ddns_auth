@@ -13,13 +13,17 @@ Caller:
     rx.button("Pick", on_click=Intent.start("relack", "people.pick", on_result=S.picked))
     rx.button("Call", on_click=Intent.start(None, "call.join", private={"room": rid},
                                             keep_alive=True, single=True))
+    rx.button("Call", on_click=Intent.choose_app("call.join", on_result=S.app_chosen))
     intent_host()  # once per page, or install_intent_host(app) once for all pages
 
 ``on_result`` receives the provider's answer; ``on_cancel`` runs when the
 dialog closes without one, with the ``reason``. ``app=None`` lets the
-registry pick the app that provides the action; ``private`` params stay out
-of the URL. Several dialogs can be open: one in front, and ``keep_alive`` ones
-minimized to a tray where they keep running.
+registry pick the app that provides the action (the user chooses when several
+do); ``Intent.choose_app`` only asks, and hands ``{"app": ...}`` to its
+``on_result``, so that everyone joining the same session (a call) can then
+start that very app by name. ``private`` params stay out of the URL. Several
+dialogs can be open: one in front, and ``keep_alive`` ones minimized to a tray
+where they keep running.
 """
 
 from reflex_ddns_auth.intent.host import Intent, IntentState, install_intent_host, intent_host

@@ -14,6 +14,13 @@
 ``registry``); when several do, the dialog first asks which one to use.
 ``private`` params skip the URL and reach the provider by postMessage.
 
+When several people must end up in the same app (e.g. everyone joining one
+call), let the first one choose it, then start it by name for everyone:
+
+    rx.button("Call", on_click=Intent.choose_app("call.join", on_result=MyState.app_chosen))
+    # MyState.app_chosen gets {"app": ..., "action": ...}: keep the app with the call
+    # and open it with Intent.start(app, "call.join", ...) for the caller and the callees
+
 One dialog is in front at a time. Opening another one closes it, unless it
 was started with ``keep_alive=True``: then it is minimized to a tray at the
 bottom left and keeps running (e.g. a call goes on while a picker is open),
@@ -92,7 +99,9 @@ class IntentState(rx.State):
     active: str = ""
     # Apps to pick from in the chooser dialog ({"app", "url"}).
     choices: list[dict[str, str]] = []
-    # id -> {"origin", "result_key", "cancel_key", "private"} or, for a chooser, {"request"}.
+    # id -> {"origin", "result_key", "cancel_key", "private"} or, for a chooser, its
+    # "cancel_key" and either the "request" waiting for the app (Intent.start) or
+    # the "result_key" to report the app to (Intent.choose_app).
     _meta: dict[str, dict[str, Any]] = {}
 
     @rx.var
@@ -199,6 +208,34 @@ class IntentState(rx.State):
             script += ";" + host_pending_params_js(dialog_id, origin, private)
         return rx.call_script(script)
 
+    def _open_chooser(self, action: str, label: str, providers: list[str], meta: dict[str, Any]) -> EventSpec:
+        """Ask which of ``providers`` should handle ``action``; ``choose`` goes on from there."""
+        dialog_id = secrets.token_hex(8)
+        self.dialogs = [
+            *self.dialogs,
+            {
+                "id": dialog_id,
+                "kind": "chooser",
+                "src": "",
+                "action": action,
+                "label": label or action,
+                "keep_alive": "",
+            },
+        ]
+        self._meta = {**self._meta, dialog_id: meta}
+        self.choices = [{"app": p, "url": app_url(p)} for p in providers]
+        self.active = dialog_id
+        return _bridge()
+
+    @staticmethod
+    def _unavailable(action: str, cancel_key: str) -> list[EventSpec]:
+        """No installed app provides ``action``: say so, and tell the caller's ``on_cancel``."""
+        events = [rx.toast.error(f"No installed app can open {action}.")]
+        handler = _resolve_handler(cancel_key)
+        if handler is not None:
+            events.append(handler({"reason": "unavailable", "action": action}))
+        return events
+
     @rx.event
     async def open_intent(
         self,
@@ -230,32 +267,28 @@ class IntentState(rx.State):
         if not app:
             providers = await resolve_providers(action)
             if not providers:
-                events.append(rx.toast.error(f"No installed app can open {action}."))
-                handler = _resolve_handler(cancel_key)
-                if handler is not None:
-                    events.append(handler({"reason": "unavailable", "action": action}))
+                events.extend(self._unavailable(action, cancel_key))
                 return [e for e in events if e is not None]
             if len(providers) > 1:
-                dialog_id = secrets.token_hex(8)
-                self.dialogs = [
-                    *self.dialogs,
-                    {
-                        "id": dialog_id,
-                        "kind": "chooser",
-                        "src": "",
-                        "action": action,
-                        "label": request["label"] or action,
-                        "keep_alive": "",
-                    },
-                ]
-                self._meta = {**self._meta, dialog_id: {"cancel_key": cancel_key, "request": request}}
-                self.choices = [{"app": p, "url": app_url(p)} for p in providers]
-                self.active = dialog_id
-                return [*(e for e in events if e is not None), _bridge()]
+                meta = {"cancel_key": cancel_key, "request": request}
+                events.append(self._open_chooser(action, request["label"], providers, meta))
+                return [e for e in events if e is not None]
             app = providers[0]
 
         events.append(self._launch(app, request))
         return [e for e in events if e is not None]
+
+    @rx.event
+    async def choose_app(self, action: str, result_key: str, cancel_key: str = ""):
+        """Find the app for ``action`` without opening it, asking when several provide it."""
+        providers = await resolve_providers(action)
+        if not providers:
+            return self._unavailable(action, cancel_key)
+        if len(providers) == 1:
+            handler = _resolve_handler(result_key)
+            return handler({"app": providers[0], "action": action}) if handler is not None else None
+        meta = {"cancel_key": cancel_key, "result_key": result_key}
+        return [*self._vacate_front(action), self._open_chooser(action, "", providers, meta)]
 
     @rx.event
     def rearm(self):
@@ -272,16 +305,19 @@ class IntentState(rx.State):
 
     @rx.event
     def choose(self, app: str):
-        """Open the intent waiting in the chooser with the app the user picked."""
+        """The user picked ``app`` in the chooser: open the intent waiting there, or report the app."""
         chooser = self._find(self.active)
         if chooser is None or chooser["kind"] != "chooser":
             return
         if app not in [c["app"] for c in self.choices]:
             return
-        request = self._meta.get(chooser["id"], {}).get("request")
+        meta = self._meta.get(chooser["id"], {})
         self._remove(chooser["id"])
-        if request is not None:
-            return self._launch(app, request)
+        if meta.get("request") is not None:
+            return self._launch(app, meta["request"])
+        handler = _resolve_handler(meta.get("result_key", ""))
+        if handler is not None:
+            return handler({"app": app, "action": chooser["action"]})
 
     @rx.event
     def close(self):
@@ -381,6 +417,26 @@ class Intent:
         return IntentState.open_intent(
             app or "", action, params, result_key, cancel_key, private or {}, options
         )
+
+    @staticmethod
+    def choose_app(
+        action: str,
+        on_result: EventHandler,
+        on_cancel: EventHandler | None = None,
+    ) -> EventSpec:
+        """Event that finds the app to open ``action`` with, without opening it.
+
+        When several installed apps provide ``action``, the chooser asks which
+        one; ``on_result`` then gets ``{"app": <app>, "action": action}`` (right
+        away when only one does). ``on_cancel`` gets the ``reason`` as for
+        ``start``: ``closed`` or ``replaced`` (the chooser), or ``unavailable``.
+
+        Start that app by name for everyone who must end up in the same app,
+        e.g. the people joining one call: with ``Intent.start(None, ...)`` each
+        of them would choose for themselves.
+        """
+        cancel_key = format_event_handler(on_cancel) if on_cancel is not None else ""
+        return IntentState.choose_app(action, format_event_handler(on_result), cancel_key)
 
     @staticmethod
     def show(action: str) -> EventSpec:
