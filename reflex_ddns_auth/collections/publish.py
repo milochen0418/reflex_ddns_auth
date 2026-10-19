@@ -7,8 +7,8 @@
 
 Two layers of atomicity (the Maildir idea): each file is written under a
 ``.part`` name and renamed when closed; the whole item lives under
-``.tmp/<id>.<token>/`` and is renamed into place after ``manifest.json`` was
-written last.  Readers never see a half item.  An exception inside the
+``.tmp/<id>.<token>/`` and is renamed into place after ``.item/manifest.json``
+was written last.  Readers never see a half item.  An exception inside the
 ``with`` block leaves the ``.tmp`` directory for ``resume=True`` to pick up.
 """
 
@@ -23,10 +23,11 @@ from typing import TYPE_CHECKING, Any, Iterable
 
 from reflex_ddns_auth.collections.errors import ItemExists, PublishError
 from reflex_ddns_auth.collections.manifest import (
-    MANIFEST_NAME,
     PART_SUFFIX,
     SCHEMA_VERSION,
     TMP_DIR,
+    manifest_path,
+    meta_dir,
     safe_relpath,
     scan_files,
     utcnow_iso,
@@ -119,7 +120,7 @@ class Publish:
     # -- context manager ---------------------------------------------------
 
     def __enter__(self) -> "Publish":
-        if (self.final / MANIFEST_NAME).exists() and not self.exist_ok:
+        if manifest_path(self.final).exists() and not self.exist_ok:
             raise ItemExists(f"{self.ref} is already published")
         try:
             self.collection.ensure_own_dirs()
@@ -215,14 +216,15 @@ class Publish:
             "bytes": sum(int(f["bytes"]) for f in files),
             "meta": self.meta,
         }
-        write_json_atomic(self.tmp / MANIFEST_NAME, manifest)
+        meta_dir(self.tmp).mkdir(exist_ok=True)
+        write_json_atomic(manifest_path(self.tmp), manifest)
         try:
             os.rename(self.tmp, self.final)
         except OSError as exc:
-            if exc.errno in (errno.EEXIST, errno.ENOTEMPTY, errno.EISDIR) or (self.final / MANIFEST_NAME).exists():
+            if exc.errno in (errno.EEXIST, errno.ENOTEMPTY, errno.EISDIR) or manifest_path(self.final).exists():
                 shutil.rmtree(self.tmp, ignore_errors=True)
                 self.tmp = None
-                if (self.final / MANIFEST_NAME).exists():
+                if manifest_path(self.final).exists():
                     self.existing = True
                     if self.exist_ok:
                         self.manifest = None

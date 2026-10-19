@@ -12,9 +12,9 @@
 
 Layout on disk (the same on every host and in every container):
 
-    <root>/<collection>/by-app/<owner>/<item-id>/manifest.json
-    <root>/<collection>/by-app/<owner>/<item-id>/<files...>
-    <root>/<collection>/by-app/<owner>/.tmp/             publishes in progress (ignored by readers)
+    <root>/<collection>/by-app/<owner>/<item-id>/<files...>           the payload, nothing else
+    <root>/<collection>/by-app/<owner>/<item-id>/.item/manifest.json  bookkeeping, hidden like .git/
+    <root>/<collection>/by-app/<owner>/.tmp/                          publishes in progress (ignored by readers)
 
 See ``paths.py`` for how the root and the owner are resolved.
 """
@@ -28,7 +28,7 @@ from reflex_ddns_auth.collections.errors import (
     NodeUnavailable,
     PublishError,
 )
-from reflex_ddns_auth.collections.manifest import BY_APP, MANIFEST_NAME, REPLICA_NAME, TMP_DIR
+from reflex_ddns_auth.collections.manifest import BY_APP, MANIFEST_NAME, META_DIR, REPLICA_NAME, TMP_DIR
 from reflex_ddns_auth.collections.paths import (
     ENV_APP_ID,
     ENV_NODE_URL,
@@ -45,7 +45,7 @@ from reflex_ddns_auth.collections.refs import Ref, make_ref, parse_ref
 __all__ = [
     "Collection", "Item", "Publish", "Ref", "make_ref", "parse_ref",
     "CollectionError", "InvalidRef", "ItemExists", "ItemNotFound", "NodeUnavailable", "PublishError",
-    "BY_APP", "MANIFEST_NAME", "REPLICA_NAME", "TMP_DIR",
+    "BY_APP", "MANIFEST_NAME", "META_DIR", "REPLICA_NAME", "TMP_DIR",
     "ENV_APP_ID", "ENV_NODE_URL", "ENV_ROOT",
     "app_id_from_name", "default_root", "resolve_app_id", "resolve_node_url", "resolve_root",
 ]

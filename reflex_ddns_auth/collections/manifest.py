@@ -1,11 +1,14 @@
 """On-disk conventions shared by the library and the re-ddns node.
 
-    <root>/<collection>/by-app/<owner>/<item-id>/manifest.json   published item
-    <root>/<collection>/by-app/<owner>/<item-id>/.replica        this copy came from another host
-    <root>/<collection>/by-app/<owner>/.tmp/<item-id>.<token>/   publish (or replica fetch) in progress
+    <root>/<collection>/by-app/<owner>/<item-id>/                     the item: its payload files
+    <root>/<collection>/by-app/<owner>/<item-id>/.item/manifest.json  written last; marks the item complete
+    <root>/<collection>/by-app/<owner>/<item-id>/.item/replica.json   this copy came from another host
+    <root>/<collection>/by-app/<owner>/.tmp/<item-id>.<token>/        publish (or replica fetch) in progress
 
-``manifest.json`` is written last and its presence is the only signal that an
-item is complete.  Readers ignore everything else.
+All bookkeeping lives in the hidden ``.item/`` directory (like ``.git/`` in a
+working tree), so an app that treats the item directory as "a folder of
+files" sees nothing but the payload.  The manifest is written last and its
+presence is the only signal that an item is complete.
 """
 
 from __future__ import annotations
@@ -16,11 +19,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SCHEMA_VERSION = 1
+META_DIR = ".item"
 MANIFEST_NAME = "manifest.json"
-REPLICA_NAME = ".replica"
+REPLICA_NAME = "replica.json"
 TMP_DIR = ".tmp"
 BY_APP = "by-app"
 PART_SUFFIX = ".part"
+
+
+def meta_dir(item_dir: Path) -> Path:
+    return item_dir / META_DIR
+
+
+def manifest_path(item_dir: Path) -> Path:
+    return item_dir / META_DIR / MANIFEST_NAME
+
+
+def replica_path(item_dir: Path) -> Path:
+    return item_dir / META_DIR / REPLICA_NAME
 
 
 def utcnow_iso() -> str:
@@ -47,23 +63,25 @@ def write_json_atomic(path: Path, data: dict) -> None:
 
 
 def scan_files(item_dir: Path) -> tuple[list[dict], list[str]]:
-    """``(files, unfinished)``: regular files below ``item_dir`` and leftover ``.part`` names.
+    """``(files, unfinished)``: payload files below ``item_dir`` and leftover ``.part`` names.
 
-    Symlinks are skipped (never followed), so an item can only describe its
-    own bytes.  Paths are POSIX-style and relative to ``item_dir``.
+    The ``.item/`` bookkeeping directory is not part of the payload.  Symlinks
+    are skipped (never followed), so an item can only describe its own bytes.
+    Paths are POSIX-style and relative to ``item_dir``.
     """
     files: list[dict] = []
     unfinished: list[str] = []
     root = str(item_dir)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = sorted(d for d in dirnames if not os.path.islink(os.path.join(dirpath, d)))
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if not os.path.islink(os.path.join(dirpath, d)) and not (dirpath == root and d == META_DIR)
+        )
         for name in filenames:
             full = os.path.join(dirpath, name)
             if os.path.islink(full):
                 continue
             rel = os.path.relpath(full, root).replace(os.sep, "/")
-            if rel in (MANIFEST_NAME, REPLICA_NAME):
-                continue
             if name.endswith(PART_SUFFIX):
                 unfinished.append(rel)
                 continue
@@ -80,6 +98,6 @@ def safe_relpath(rel: str) -> str:
     parts = rel.split("/")
     if any(p in ("", ".", "..") for p in parts):
         raise ValueError(f"bad file path {rel!r}")
-    if parts[-1] in (MANIFEST_NAME, REPLICA_NAME) and len(parts) == 1:
-        raise ValueError(f"{rel!r} is reserved")
+    if parts[0] == META_DIR:
+        raise ValueError(f"{META_DIR}/ is reserved for the item's bookkeeping")
     return "/".join(parts)

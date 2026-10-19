@@ -29,10 +29,10 @@ from typing import Any, Iterable
 from reflex_ddns_auth.collections.errors import InvalidRef, ItemNotFound
 from reflex_ddns_auth.collections.manifest import (
     BY_APP,
-    MANIFEST_NAME,
-    REPLICA_NAME,
     TMP_DIR,
+    manifest_path,
     read_json,
+    replica_path,
     safe_relpath,
 )
 from reflex_ddns_auth.collections.node_client import NodeClient, Progress
@@ -120,7 +120,7 @@ class Collection:
         return str(make_ref(self.name, self.app_id, item_id))
 
     def has(self, item_id: str) -> bool:
-        return (self.own_dir / check_item_id(item_id) / MANIFEST_NAME).exists()
+        return manifest_path(self.own_dir / check_item_id(item_id)).exists()
 
     def publish(
         self,
@@ -143,7 +143,7 @@ class Collection:
     def remove(self, item_id: str) -> bool:
         """Delete one of our own items.  Other apps' items cannot be removed."""
         target = self.own_dir / check_item_id(item_id)
-        if not (target / MANIFEST_NAME).exists():
+        if not manifest_path(target).exists():
             return False
         shutil.rmtree(target)
         return True
@@ -222,14 +222,14 @@ class Collection:
         """The local directory of ``ref``; fetched from its home host first when needed."""
         r = self._own_ref(ref)
         target = self.path / BY_APP / r.owner / r.id
-        if (target / MANIFEST_NAME).exists():
+        if manifest_path(target).exists():
             return target
         if not fetch:
             raise ItemNotFound(f"{r} is not on this host")
         if not self.node.available:
             raise ItemNotFound(f"{r} is not on this host and no re-ddns node is configured")
         self.node.fetch(str(r), timeout=timeout, progress=progress)
-        if (target / MANIFEST_NAME).exists():
+        if manifest_path(target).exists():
             return target
         raise ItemNotFound(f"{r}: the node reported success but the item is not visible here")
 
@@ -242,10 +242,10 @@ class Collection:
         return r
 
     def _item_from_dir(self, owner: str, item_dir: Path) -> Item | None:
-        manifest = read_json(item_dir / MANIFEST_NAME)
+        manifest = read_json(manifest_path(item_dir))
         if manifest is None:
             return None
-        replica = read_json(item_dir / REPLICA_NAME) if (item_dir / REPLICA_NAME).exists() else None
+        replica = read_json(replica_path(item_dir)) if replica_path(item_dir).exists() else None
         producer = manifest.get("producer") if isinstance(manifest.get("producer"), dict) else {}
         home = str((replica or {}).get("home") or producer.get("host") or "")
         return Item(

@@ -21,7 +21,7 @@ from reflex_ddns_auth.collections import (
     resolve_root,
 )
 from reflex_ddns_auth.collections import paths
-from reflex_ddns_auth.collections.manifest import MANIFEST_NAME, REPLICA_NAME, TMP_DIR
+from reflex_ddns_auth.collections.manifest import MANIFEST_NAME, META_DIR, REPLICA_NAME, TMP_DIR
 
 
 @pytest.fixture
@@ -101,7 +101,9 @@ def test_publish_single_file(root):
     assert video.has("yt-abc")
     assert item.ref == "video:youtube-downloader/yt-abc"
     final = video.own_dir / "yt-abc"
-    manifest = json.loads((final / MANIFEST_NAME).read_text())
+    assert sorted(p.name for p in final.iterdir()) == [META_DIR, "clip.webm"]   # payload + hidden bookkeeping
+    assert sorted(p.name for p in final.iterdir() if p.is_file()) == ["clip.webm"]
+    manifest = json.loads((final / META_DIR / MANIFEST_NAME).read_text())
     assert manifest["kind"] == "video.file"
     assert manifest["owner"] == "youtube-downloader"
     assert manifest["primary"] == "clip.webm"
@@ -137,6 +139,13 @@ def test_publish_rejects_bad_paths_and_modes(root):
     with pytest.raises(PublishError):
         with c.publish("z", kind="video.file") as item:
             item.open("f.bin", "rb")
+    with pytest.raises(PublishError):
+        with c.publish("w", kind="video.file") as item:
+            item.open(".item/manifest.json")          # the bookkeeping directory is reserved
+    with c.publish("v", kind="video.file") as item:
+        with item.open("manifest.json") as fh:       # a payload file may carry that name
+            fh.write(b"not ours")
+    assert [f["path"] for f in c.items()[0].files] == ["manifest.json"]
     with pytest.raises(PublishError):
         c.publish("k", kind="")
 
@@ -263,7 +272,7 @@ def test_union_view_ignores_noise(root):
 def test_replica_marker_is_reported(root):
     c = Collection("video", app_id="a")
     _publish(c, "r")
-    (c.own_dir / "r" / REPLICA_NAME).write_text(json.dumps({"home": "mac-b"}))
+    (c.own_dir / "r" / META_DIR / REPLICA_NAME).write_text(json.dumps({"home": "mac-b"}))
     it = c.items()[0]
     assert it.replica and it.home == "mac-b"
 
@@ -311,10 +320,10 @@ def _mock_node(root: Path, remote_entries: list[dict], fetched: list[str]):
                 return httpx.Response(404, json={"detail": "unknown on every host"})
             owner, item_id = ref.split(":", 1)[1].split("/", 1)
             d = root / "video" / "by-app" / owner / item_id
-            d.mkdir(parents=True)
+            (d / META_DIR).mkdir(parents=True)
             (d / "f.bin").write_bytes(b"remote-bytes")
-            (d / REPLICA_NAME).write_text(json.dumps({"home": entry["home"]}))
-            (d / MANIFEST_NAME).write_text(json.dumps(entry["manifest"]))
+            (d / META_DIR / REPLICA_NAME).write_text(json.dumps({"home": entry["home"]}))
+            (d / META_DIR / MANIFEST_NAME).write_text(json.dumps(entry["manifest"]))
             fetched.append(ref)
             return httpx.Response(200, json={"ok": True, "replica": True, "bytes": 12})
         if request.url.path == "/api/collections/video/fetch-status":
