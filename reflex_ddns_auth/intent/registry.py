@@ -2,9 +2,13 @@
 
     Intent.start(None, "call.join", room=rid)
 
+    for opener in await resolve_openers("dicom.series"):     # "Open with"
+        Intent.start(opener["app"], opener["action"], ref=ref)
+
 Providers publish their actions at ``MANIFEST_PATH`` (see ``provider.intent``);
 re-ddns collects them from every installed app and answers
-``GET <registry>/api/intent/providers?action=<action>``.
+``GET <registry>/api/intent/providers?action=<action>`` and, for the actions
+that accept a collection item kind, ``GET <registry>/api/intent/openers?kind=<kind>``.
 
 Lookup order:
 
@@ -29,6 +33,7 @@ _CACHE_SECONDS = 30
 _TIMEOUT_SECONDS = 3
 
 _cache: dict[str, tuple[float, list[str]]] = {}
+_openers_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
 def provider_env_key(action: str) -> str:
@@ -63,3 +68,30 @@ async def resolve_providers(action: str) -> list[str]:
         return []
     _cache[action] = (time.monotonic(), apps)
     return apps
+
+
+async def resolve_openers(kind: str) -> list[dict]:
+    """Intent actions that open items of ``kind``: ``[{"app", "action", "title"}]``, best effort.
+
+    Start one with ``Intent.start(opener["app"], opener["action"], ref=ref)``.
+    """
+    registry = _registry_url()
+    if not registry or not kind:
+        return []
+    cached = _openers_cache.get(kind)
+    if cached and time.monotonic() - cached[0] < _CACHE_SECONDS:
+        return cached[1]
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+            resp = await client.get(f"{registry}/api/intent/openers", params={"kind": kind})
+            resp.raise_for_status()
+            openers = [
+                {"app": o["app"], "action": o["action"], "title": o.get("title") or o["action"]}
+                for o in resp.json().get("openers", [])
+                if o.get("app") and o.get("action")
+            ]
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as e:
+        logger.warning("Intent registry lookup of openers for %r failed: %s", kind, e)
+        return []
+    _openers_cache[kind] = (time.monotonic(), openers)
+    return openers

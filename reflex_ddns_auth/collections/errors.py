@@ -9,6 +9,10 @@ class InvalidRef(CollectionError, ValueError):
     """A ref, collection, owner or item id does not follow the naming rules."""
 
 
+class InvalidKind(CollectionError, ValueError):
+    """A kind is not ``<domain>.<type>`` (see ``kinds.py``)."""
+
+
 class ItemExists(CollectionError):
     """An item with this id is already published in the own contribution."""
 
@@ -23,3 +27,7 @@ class NodeUnavailable(CollectionError):
 
 class PublishError(CollectionError):
     """A publish cannot complete (empty item, unfinished ``.part`` file, ...)."""
+
+
+class QuotaExceeded(PublishError):
+    """The app's quota in this collection (set on the App Store's storage page) is used up."""

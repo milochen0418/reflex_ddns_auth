@@ -17,8 +17,23 @@ Close button instead of calling ``on_open``. Params the caller passed with
 Inside the page, ``IntentPage.is_active`` tells whether it is embedded in a
 caller's dialog; ``IntentPage.finish(data)`` / ``IntentPage.cancel`` answer it.
 
+An action that opens collection items says which kinds it accepts; it gets
+the item's ref as its ``ref`` param (declared for it when ``params`` is left
+out, required either way)::
+
+    @intent(app, action="dicom.open-series", on_open=ViewerState.open_ref,
+            accepts=("dicom.series",))
+    def open_series_intent():
+        return viewer_view()
+
+Callers find such actions with ``resolve_openers(kind)``: another app opens it
+as a dialog (``Intent.start(app, action, ref=ref)``), and the App Store's
+storage page opens it as a page of its own in a new tab ("Open with"), where
+``IntentPage.is_active`` is false.
+
 An app with intents also serves its manifest at ``/_ddns_intent/manifest``;
-re-ddns reads it to tell callers which app provides an action.
+re-ddns reads it to tell callers which app provides an action, and which
+actions open a kind.
 """
 
 import json
@@ -28,6 +43,7 @@ import reflex as rx
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from reflex_ddns_auth.collections.kinds import check_kind
 from reflex_ddns_auth.intent.protocol import (
     ID_PARAM,
     ORIGIN_PARAM,
@@ -47,8 +63,11 @@ _PARAM_TYPES = {str: "str", int: "int", float: "float", bool: "bool"}
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
 
-# action -> {"source", "title", "params", "required", "on_open"}
+# action -> {"source", "title", "params", "required", "on_open", "accepts"}
 _actions: dict[str, dict[str, Any]] = {}
+
+# The param an action that accepts kinds gets the item's ref in.
+REF_PARAM = "ref"
 
 
 def _convert(value: str, kind: type) -> Any:
@@ -92,6 +111,8 @@ def manifest() -> dict[str, Any]:
                 for name, kind in spec["params"].items()
             }
         actions[action] = {"title": spec["title"], "route": intent_route(action), "params": schema}
+        if spec.get("accepts"):
+            actions[action]["accepts"] = list(spec["accepts"])
     return {"v": PROTOCOL_VERSION, "actions": actions}
 
 
@@ -236,12 +257,23 @@ def intent(
     title: str | None = None,
     params: dict[str, type] | None = None,
     required: tuple[str, ...] | list[str] = (),
+    accepts: tuple[str, ...] | list[str] = (),
 ) -> Callable[[Callable[[], rx.Component]], Callable[[], rx.Component]]:
     """Register ``/intent/<action>`` on ``app`` rendering the decorated component.
 
     ``params`` maps each accepted param to ``str``, ``int``, ``float`` or
-    ``bool``; ``required`` lists the ones that must be present.
+    ``bool``; ``required`` lists the ones that must be present.  ``accepts``
+    lists the collection item kinds the action opens (e.g. ``("dicom.series",)``);
+    the item's ref then arrives as the required ``ref`` param.
     """
+    accepts = tuple(check_kind(str(k).strip()) for k in accepts)
+    if accepts:
+        if params is None:
+            params = {REF_PARAM: str}
+        elif params.get(REF_PARAM) is not str:
+            raise ValueError(f"Intent {action!r} accepts kinds, so it takes the item's ref: add {REF_PARAM!r}: str to params")
+        if REF_PARAM not in required:
+            required = (*required, REF_PARAM)
     if params is not None:
         unknown = [name for name, kind in params.items() if kind not in _PARAM_TYPES]
         if unknown:
@@ -262,6 +294,7 @@ def intent(
             "params": dict(params) if params is not None else None,
             "required": tuple(required),
             "on_open": on_open,
+            "accepts": accepts,
         }
         _add_manifest_route(app)
         app.add_page(

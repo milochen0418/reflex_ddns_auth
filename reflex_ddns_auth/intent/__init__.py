@@ -25,11 +25,15 @@ start that very app by name. ``private`` params stay out of the URL. Several
 dialogs can be open: one in front, and ``keep_alive`` ones minimized to a tray
 where they keep running; dragged up from there, one becomes a small
 picture-in-picture window.
+
+"Open with" for collection items: a provider declares the item kinds an
+action opens (``@intent(..., accepts=("dicom.series",))``, the ref arrives as
+the ``ref`` param), and ``await resolve_openers(kind)`` lists those actions.
 """
 
 from reflex_ddns_auth.intent.host import Intent, IntentState, install_intent_host, intent_host
 from reflex_ddns_auth.intent.provider import IntentPage, intent
-from reflex_ddns_auth.intent.registry import resolve_providers
+from reflex_ddns_auth.intent.registry import resolve_openers, resolve_providers
 
 __all__ = [
     "Intent",
@@ -38,5 +42,6 @@ __all__ = [
     "install_intent_host",
     "IntentPage",
     "intent",
+    "resolve_openers",
     "resolve_providers",
 ]

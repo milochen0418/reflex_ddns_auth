@@ -3,7 +3,9 @@
     <root>/<collection>/by-app/<owner>/<item-id>/                     the item: its payload files
     <root>/<collection>/by-app/<owner>/<item-id>/.item/manifest.json  written last; marks the item complete
     <root>/<collection>/by-app/<owner>/<item-id>/.item/replica.json   this copy came from another host
+    <root>/<collection>/by-app/<owner>/<item-id>/.item/thumbnail.png  optional preview (png/jpg/webp/gif)
     <root>/<collection>/by-app/<owner>/.tmp/<item-id>.<token>/        publish (or replica fetch) in progress
+    <root>/<collection>/by-app/<owner>/.tmp/<item-id>.revise.<token>/ a revision's files, staged (revise.py)
 
 All bookkeeping lives in the hidden ``.item/`` directory (like ``.git/`` in a
 working tree), so an app that treats the item directory as "a folder of
@@ -25,6 +27,26 @@ REPLICA_NAME = "replica.json"
 TMP_DIR = ".tmp"
 BY_APP = "by-app"
 PART_SUFFIX = ".part"
+REVISE_INFIX = ".revise."
+
+# An item's preview image: ``.item/thumbnail.<ext>``, written while publishing
+# (before the manifest, which names it).  Small, and one of these types only.
+THUMBNAIL_STEM = "thumbnail"
+THUMBNAIL_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "gif": "image/gif"}
+THUMBNAIL_MAX_BYTES = 512 * 1024
+
+
+def image_type(head: bytes) -> str | None:
+    """The thumbnail extension ``head`` (the first bytes of a file) really is, or ``None``."""
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    return None
 
 
 def meta_dir(item_dir: Path) -> Path:

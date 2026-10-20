@@ -29,6 +29,9 @@ from typing import Any, Iterable
 from reflex_ddns_auth.collections.errors import InvalidRef, ItemNotFound
 from reflex_ddns_auth.collections.manifest import (
     BY_APP,
+    META_DIR,
+    THUMBNAIL_STEM,
+    THUMBNAIL_TYPES,
     TMP_DIR,
     manifest_path,
     read_json,
@@ -38,6 +41,7 @@ from reflex_ddns_auth.collections.manifest import (
 from reflex_ddns_auth.collections.node_client import NodeClient, Progress
 from reflex_ddns_auth.collections.paths import resolve_app_id, resolve_node_url, resolve_root
 from reflex_ddns_auth.collections.publish import Publish
+from reflex_ddns_auth.collections.revise import Revise, _revision
 from reflex_ddns_auth.collections.refs import (
     Ref,
     check_collection,
@@ -69,6 +73,16 @@ class Item:
         return str(self.manifest.get("created_at") or "")
 
     @property
+    def revision(self) -> int:
+        """How often its owner revised it, plus one (``revise.py``): 1 for most items."""
+        return _revision(self.manifest)
+
+    @property
+    def updated_at(self) -> str:
+        """When it was last revised; its ``created_at`` if never."""
+        return str(self.manifest.get("updated_at") or self.created_at)
+
+    @property
     def meta(self) -> dict:
         m = self.manifest.get("meta")
         return m if isinstance(m, dict) else {}
@@ -84,6 +98,16 @@ class Item:
         if not name or self.path is None:
             return None
         return self.path / safe_relpath(str(name))
+
+    @property
+    def thumbnail(self) -> Path | None:
+        """The preview image the producer attached (``Publish.set_thumbnail``), once local."""
+        name = str(self.manifest.get("thumbnail") or "")
+        stem, _, ext = name.partition(".")
+        if self.path is None or stem != THUMBNAIL_STEM or ext not in THUMBNAIL_TYPES:
+            return None
+        path = self.path / META_DIR / name
+        return path if path.is_file() else None
 
     def file(self, rel: str) -> Path:
         if self.path is None:
@@ -139,6 +163,17 @@ class Collection:
             self, item_id, kind, title=title, meta=meta, source=source,
             derived_from=derived_from, primary=primary, exist_ok=exist_ok, resume=resume,
         )
+
+    def revise(
+        self,
+        item_id: str,
+        *,
+        title: str | None = None,
+        meta: dict | None = None,
+        primary: str | None = None,
+    ) -> Revise:
+        """Change one of our own published items in place (see ``revise.py``)."""
+        return Revise(self, item_id, title=title, meta=meta, primary=primary)
 
     def remove(self, item_id: str) -> bool:
         """Delete one of our own items.  Other apps' items cannot be removed."""
@@ -202,10 +237,10 @@ class Collection:
         items.sort(key=lambda i: (i.created_at, i.ref), reverse=True)
         return items
 
-    def get(self, ref: "str | Ref") -> Item | None:
+    def get(self, ref: "str | Ref", remote: bool = True) -> Item | None:
         r = self._own_ref(ref)
         item = self._item_from_dir(r.owner, self.path / BY_APP / r.owner / r.id)
-        if item is not None:
+        if item is not None or not remote:
             return item
         for entry in self.node.remote_items(self.name) if self.node.available else []:
             if entry.get("ref") == str(r):

@@ -57,6 +57,20 @@ class NodeClient:
             return []
         return [i for i in items if isinstance(i, dict)]
 
+    def quota(self, collection: str, owner: str) -> dict | None:
+        """``{"limit", "used"}`` in bytes for ``owner`` here (limit 0 = none); ``None`` when unknown.
+
+        An unreachable node, or one that predates quotas, means no quota.
+        """
+        if not self.available:
+            return None
+        try:
+            r = self._client().get(self._url(f"/api/collections/{collection}/quota/{owner}"), timeout=5.0)
+            data = r.json() if r.status_code == 200 else None
+        except Exception:  # noqa: BLE001 - a node outage must not block publishing
+            return None
+        return data if isinstance(data, dict) else None
+
     def status(self, ref: str) -> dict:
         collection = ref.split(":", 1)[0]
         try:
