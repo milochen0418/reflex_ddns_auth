@@ -28,9 +28,12 @@ until the user brings it back or closes it. Clicking outside or Escape also
 minimize a keep-alive dialog; its × closes it. ``single=True`` allows one
 dialog of the action at a time (opening it again closes the previous one).
 A minimized dialog's pill can be dragged along the bottom, or up into a small
-picture-in-picture window of the dialog (see ``tray``).
+picture-in-picture window of the dialog (see ``tray``); the ⧉ button of a
+keep-alive dialog opens that window at once.
 
-``on_result`` runs when the provider finishes with data. ``on_cancel`` runs when
+``on_result`` runs when the provider finishes with data. ``on_update`` runs
+each time the provider sends news while its dialog stays open (e.g. a file
+it made is ready), with the provider's data. ``on_cancel`` runs when
 the dialog closes without a result, with ``{"reason": ..., "action": ...}``:
 
 - ``closed``: the × button (or, for other dialogs, a click outside or Escape)
@@ -108,7 +111,7 @@ class IntentState(rx.State):
     active: str = ""
     # Apps to pick from in the chooser dialog ({"app", "url"}).
     choices: list[dict[str, str]] = []
-    # id -> {"origin", "result_key", "cancel_key", "private"} or, for a chooser, its
+    # id -> {"origin", "result_key", "update_key", "cancel_key", "private"} or, for a chooser, its
     # "cancel_key" and either the "request" waiting for the app (Intent.start) or
     # the "result_key" to report the app to (Intent.choose_app).
     _meta: dict[str, dict[str, Any]] = {}
@@ -206,6 +209,7 @@ class IntentState(rx.State):
             dialog_id: {
                 "origin": origin,
                 "result_key": request["result_key"],
+                "update_key": request["update_key"],
                 "cancel_key": request["cancel_key"],
                 # Kept to hand over again if the page reloads under the dialog.
                 "private": private,
@@ -261,6 +265,7 @@ class IntentState(rx.State):
             "action": action,
             "params": params,
             "result_key": result_key,
+            "update_key": str(options.get("update_key") or ""),
             "cancel_key": cancel_key,
             "private": private or {},
             "keep_alive": bool(options.get("keep_alive")),
@@ -352,6 +357,17 @@ class IntentState(rx.State):
             self.active = ""
 
     @rx.event
+    def pip(self, dialog_id: str):
+        """Shrink a keep-alive dialog into a picture-in-picture window; it keeps running."""
+        dialog = self._find(dialog_id)
+        if dialog is None or not dialog["keep_alive"] or self.active != dialog_id:
+            return
+        self.active = ""
+        return rx.call_script(
+            f"window.__ddnsIntentTray && window.__ddnsIntentTray.pip && window.__ddnsIntentTray.pip({json.dumps(dialog_id)})"
+        )
+
+    @rx.event
     def show(self, dialog_id: str):
         """Bring a minimized dialog back to the front."""
         return self._show(dialog_id)
@@ -388,6 +404,11 @@ class IntentState(rx.State):
                     self.active = ""
                 return
             return self._dismiss(dialog_id, "cancel", **details)
+        elif event == "update":
+            # News while the dialog stays open.
+            handler = _resolve_handler(meta.get("update_key", ""))
+            if handler is not None:
+                return handler(data if isinstance(data, dict) else {"value": data})
         elif event == "result":
             handler = _resolve_handler(meta.get("result_key", ""))
             self._remove(dialog_id)
@@ -406,6 +427,7 @@ class Intent:
         keep_alive: bool = False,
         single: bool = False,
         label: Any = "",
+        on_update: EventHandler | None = None,
         **params: Any,
     ) -> EventSpec:
         """Event that opens ``action`` of ``app`` in an intent dialog.
@@ -414,7 +436,9 @@ class Intent:
         ``params`` (plain values or state Vars) go in the iframe URL;
         ``private`` ones are posted to the provider instead. ``on_result`` is
         an event handler taking one ``dict`` argument, called when the intent
-        finishes; ``on_cancel`` (same signature) when it closes without a result.
+        finishes; ``on_cancel`` (same signature) when it closes without a result;
+        ``on_update`` (same signature) whenever the provider sends news while
+        the dialog stays open.
 
         ``keep_alive`` keeps the dialog running, minimized, while other dialogs
         are in front; ``single`` closes any open dialog of the same action
@@ -423,6 +447,8 @@ class Intent:
         result_key = format_event_handler(on_result) if on_result is not None else ""
         cancel_key = format_event_handler(on_cancel) if on_cancel is not None else ""
         options = {"keep_alive": keep_alive, "single": single, "label": label}
+        if on_update is not None:
+            options["update_key"] = format_event_handler(on_update)
         return IntentState.open_intent(
             app or "", action, params, result_key, cancel_key, private or {}, options
         )
@@ -473,13 +499,23 @@ def _dialog_controls(dialog: rx.Var) -> rx.Component:
     return rx.fragment(
         rx.cond(
             dialog["keep_alive"] != "",
-            rx.el.button(
-                "–",
-                on_click=IntentState.minimize(dialog["id"]),
-                aria_label="Minimize",
-                title="Minimize",
-                custom_attrs={"data-intent-control": ""},
-                style={**_ROUND_BUTTON, "right": "46px"},
+            rx.fragment(
+                rx.el.button(
+                    "⧉",
+                    on_click=IntentState.pip(dialog["id"]),
+                    aria_label="Picture in picture",
+                    title="Picture in picture",
+                    custom_attrs={"data-intent-control": ""},
+                    style={**_ROUND_BUTTON, "right": "82px", "fontSize": "17px"},
+                ),
+                rx.el.button(
+                    "–",
+                    on_click=IntentState.minimize(dialog["id"]),
+                    aria_label="Minimize",
+                    title="Minimize",
+                    custom_attrs={"data-intent-control": ""},
+                    style={**_ROUND_BUTTON, "right": "46px"},
+                ),
             ),
         ),
         rx.el.button(

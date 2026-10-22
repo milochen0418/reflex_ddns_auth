@@ -16,6 +16,11 @@ Close button instead of calling ``on_open``. Params the caller passed with
 
 Inside the page, ``IntentPage.is_active`` tells whether it is embedded in a
 caller's dialog; ``IntentPage.finish(data)`` / ``IntentPage.cancel`` answer it.
+A page that keeps working while its dialog stays open (or minimized) tells
+the caller about progress with ``intent_update(data)``, an event to return or
+yield from any handler of the page (the caller's ``on_update`` gets ``data``).
+How the dialog is shown arrives as ``<html data-intent-view="front|pip|tray">``
+(see ``protocol``): style a large-print layout for ``pip`` with CSS.
 
 An action that opens collection items says which kinds it accepts; it gets
 the item's ref as its ``ref`` param (declared for it when ``params`` is left
@@ -40,6 +45,7 @@ import json
 from typing import Any, Callable
 
 import reflex as rx
+from reflex.event import EventSpec
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -202,6 +208,11 @@ class IntentPage(rx.State):
         return rx.call_script(provider_post_js("result", data))
 
     @rx.event
+    def update(self, data: dict):
+        """Send ``data`` to the caller's ``on_update``; the dialog stays open."""
+        return intent_update(data)
+
+    @rx.event
     def cancel(self):
         """Close the caller's dialog without a result."""
         return rx.call_script(provider_post_js("cancel"))
@@ -210,6 +221,15 @@ class IntentPage(rx.State):
     def cancel_with_error(self):
         """Close the caller's dialog, telling it why the page could not open."""
         return rx.call_script(provider_post_js("cancel", {"error": self.error}))
+
+
+def intent_update(data: dict) -> EventSpec:
+    """Event that sends ``data`` to the caller's ``on_update`` (the dialog stays open).
+
+    Return or yield it from any event handler of the intent page, background
+    tasks included; outside a caller's dialog it does nothing.
+    """
+    return rx.call_script(provider_post_js("update", data))
 
 
 def _error_panel() -> rx.Component:

@@ -9,10 +9,12 @@ The provider talks back with ``window.parent.postMessage``:
     {"type": "ddns-intent", "v": 1, "id": <id>, "event": <event>, "data": <any>}
 
 where ``event`` is one of ``ready``, ``resize`` (data = height in px),
-``result`` (data = JSON object) or ``cancel`` (data = optional details;
-``{"via": "escape"}`` when the user pressed Escape). A host page may hold
-several dialogs at once: each iframe carries its id in ``data-intent-id``,
-and a message counts only when it comes from the iframe with its ``id``.
+``update`` (data = JSON object; news for the caller while the dialog stays
+open, e.g. "this file is ready"), ``result`` (data = JSON object) or
+``cancel`` (data = optional details; ``{"via": "escape"}`` when the user
+pressed Escape). A host page may hold several dialogs at once: each iframe
+carries its id in ``data-intent-id``, and a message counts only when it comes
+from the iframe with its ``id``.
 
 Parameters too sensitive for the URL (logs, history) travel the other way:
 with ``_intent_wait=1`` in the URL, the provider holds ``on_open`` until the
@@ -21,6 +23,13 @@ host answers its ``ready`` with
     {"type": "ddns-intent", "v": 1, "id": <id>, "event": "params", "data": {...}}
 
 posted to the provider's origin only.
+
+The host also tells the provider how its dialog is shown, on ``ready`` and
+whenever that changes, with ``event`` ``view`` and data ``{"mode": ...}``:
+``front`` (the dialog in front), ``pip`` (a small picture-in-picture window,
+scaled down and not clickable) or ``tray`` (minimized, hidden). The provider
+page gets it as ``<html data-intent-view="...">``, so it can show a compact,
+large-print layout in the picture-in-picture window with CSS alone.
 """
 
 import json
@@ -156,6 +165,8 @@ def host_bridge_js(inbox_button_id: str, close_button_id: str) -> str:
         frame.contentWindow.postMessage(
           {{type: {json.dumps(MESSAGE_TYPE)}, v: {PROTOCOL_VERSION}, id: m.id, event: "params", data: p.data}}, p.origin);
       }}
+      // A (re)loaded page does not know yet how its dialog is shown.
+      if (window.__ddnsIntentTray && window.__ddnsIntentTray.resendView) window.__ddnsIntentTray.resendView(m.id);
       return;
     }}
     window.__ddnsIntentInbox.push({{id: m.id, event: m.event, data: m.data ?? null, origin: ev.origin}});
@@ -196,6 +207,8 @@ def provider_bridge_js(
     host's ``params`` message to Python by clicking a hidden button. With
     ``wait`` (private params expected), ``ready`` is repeated until they come:
     the host's listener may start after this page, e.g. when the host reloads.
+    The host's ``view`` message sets ``<html data-intent-view>`` and fires a
+    ``ddns-intent-view`` window event (``detail`` = the mode).
     """
     return f"""(() => {{
   if (window.__ddnsIntentPage || window.parent === window) return;
@@ -232,7 +245,14 @@ def provider_bridge_js(
   window.addEventListener("message", (ev) => {{
     const m = ev.data;
     if (ev.source !== window.parent || ev.origin !== origin) return;
-    if (!m || m.type !== {json.dumps(MESSAGE_TYPE)} || m.id !== id || m.event !== "params") return;
+    if (!m || m.type !== {json.dumps(MESSAGE_TYPE)} || m.id !== id) return;
+    if (m.event === "view") {{
+      const mode = String((m.data && m.data.mode) || "front");
+      document.documentElement.setAttribute("data-intent-view", mode);
+      window.dispatchEvent(new CustomEvent("ddns-intent-view", {{detail: mode}}));
+      return;
+    }}
+    if (m.event !== "params") return;
     gotParams = true;
     window.__ddnsIntentPageInbox.push(m.data ?? null);
     const btn = document.getElementById({json.dumps(params_button_id)});

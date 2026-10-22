@@ -10,25 +10,36 @@ a click on it still brings the dialog back. The pill can also be dragged:
   corner handle resizes it, keeping its proportions.
 - Pushed down to the bottom, the window becomes a pill again.
 
+A keep-alive dialog's ⧉ button (``window.__ddnsIntentTray.pip(id)``) sends it
+straight into a window at the bottom right.
+
 The window is the dialog's own element, restyled, so its page keeps running and
 is never reloaded. Everything happens in the browser, without a round trip per
 move: places are kept per dialog in sessionStorage and applied by a stylesheet
 keyed by dialog id, so they outlast re-renders, page changes and reloads.
+
+Each dialog's page is told how it is shown (``view``: front, pip or tray, see
+``protocol``) whenever that changes, so it can switch to a large-print layout
+while it is a window.
 """
 
 import json
 
+from reflex_ddns_auth.intent.protocol import MESSAGE_TYPE, PROTOCOL_VERSION
+
 _TRAY_JS = """(() => {
   if (window.__ddnsIntentTray) return;
-  window.__ddnsIntentTray = true;
+  const api = window.__ddnsIntentTray = {};
 
   const KEY = "ddns-intent-tray";
   const SHOW_BUTTON = __SHOW_BUTTON_ID__;
+  const MESSAGE = __MESSAGE__;
   const FLOOR = 16;     // the tray's gap to the bottom: nothing goes lower
   const MARGIN = 8;     // windows stay this far inside the page
   const LIFT = 40;      // a pill lifted higher than this becomes a window
   const DOCK = 12;      // a window brought this close to the floor becomes a pill
   const START_W = 240;  // width of a new window
+  const PIP_W = 320;    // width of a window opened with the ⧉ button
   const MIN_W = 160;
   const SLOP = 4;       // how far a press moves before it is a drag
 
@@ -76,6 +87,33 @@ _TRAY_JS = """(() => {
     return {x, y, w, h, s};
   };
 
+  // Tell each dialog's page how it is shown, when that changes.
+  const views = {};  // dialog id -> mode last told
+  const modeOf = (el) => {
+    if (el.dataset.intentFront === "1") return "front";
+    const place = places[el.dataset.intentDialog];
+    return place && place.mode === "pip" ? "pip" : "tray";
+  };
+  const syncViews = () => {
+    for (const el of document.querySelectorAll("[data-intent-dialog]")) {
+      const id = el.dataset.intentDialog;
+      const mode = modeOf(el);
+      if (views[id] === mode) continue;
+      const frame = el.querySelector("iframe[data-intent-id]");
+      if (!frame || !frame.contentWindow) continue;
+      let origin;
+      try { origin = new URL(frame.src, location.href).origin; } catch (e) { continue; }
+      views[id] = mode;
+      frame.contentWindow.postMessage({type: MESSAGE, v: __VERSION__, id, event: "view", data: {mode}}, origin);
+    }
+  };
+  // Brought to the front or minimized: Python flips data-intent-front.
+  let viewTick = 0;
+  new MutationObserver(() => {
+    if (!viewTick) viewTick = requestAnimationFrame(() => { viewTick = 0; syncViews(); });
+  }).observe(document.body, {subtree: true, attributes: true, attributeFilter: ["data-intent-front"]});
+  api.resendView = (id) => { delete views[id]; syncViews(); };
+
   let retry = null;
   let retries = 0;
   const render = () => {
@@ -104,6 +142,7 @@ _TRAY_JS = """(() => {
         + `[data-intent-tray-item="${id}"]{display:none!important}`;
     }
     if (sheet.textContent !== css) sheet.textContent = css;
+    syncViews();
     // A window whose dialog is not on the page (yet, e.g. right after a reload):
     // look again shortly. One still missing after a while was closed.
     if (missing && !retry) {
@@ -268,10 +307,23 @@ _TRAY_JS = """(() => {
   addEventListener("pointerup", end, true);
   addEventListener("pointercancel", end, true);
   addEventListener("resize", () => render());
+
+  // The ⧉ button: a window at the bottom right, without dragging the pill up.
+  api.pip = (id) => {
+    if (!/^[A-Za-z0-9_-]+$/.test(id) || !dialogOf(id)) return;
+    const {w, h} = fit(id, PIP_W);
+    put(id, {mode: "pip", x: innerWidth - w - 2 * MARGIN, y: innerHeight - h - FLOOR - 48, w: PIP_W});
+    save();
+    render();
+  };
   render();
 })()"""
 
 
 def tray_js(show_button_id: str) -> str:
     """Installs (once) the dragging of minimized dialogs; ``show_button_id`` brings one back."""
-    return _TRAY_JS.replace("__SHOW_BUTTON_ID__", json.dumps(show_button_id))
+    return (
+        _TRAY_JS.replace("__SHOW_BUTTON_ID__", json.dumps(show_button_id))
+        .replace("__MESSAGE__", json.dumps(MESSAGE_TYPE))
+        .replace("__VERSION__", str(PROTOCOL_VERSION))
+    )

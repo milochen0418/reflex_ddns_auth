@@ -16,15 +16,18 @@ Caller:
     rx.button("Call", on_click=Intent.choose_app("call.join", on_result=S.app_chosen))
     intent_host()  # once per page, or install_intent_host(app) once for all pages
 
-``on_result`` receives the provider's answer; ``on_cancel`` runs when the
-dialog closes without one, with the ``reason``. ``app=None`` lets the
+``on_result`` receives the provider's answer; ``on_update`` its news while
+the dialog stays open (the provider sends them with ``intent_update(data)``);
+``on_cancel`` runs when the dialog closes without an answer, with the
+``reason``. ``app=None`` lets the
 registry pick the app that provides the action (the user chooses when several
 do); ``Intent.choose_app`` only asks, and hands ``{"app": ...}`` to its
 ``on_result``, so that everyone joining the same session (a call) can then
 start that very app by name. ``private`` params stay out of the URL. Several
 dialogs can be open: one in front, and ``keep_alive`` ones minimized to a tray
-where they keep running; dragged up from there, one becomes a small
-picture-in-picture window.
+where they keep running; dragged up from there (or with their ⧉ button), one
+becomes a small picture-in-picture window, and its page is told so
+(``<html data-intent-view="pip">``).
 
 "Open with" for collection items: a provider declares the item kinds an
 action opens (``@intent(..., accepts=("dicom.series",))``, the ref arrives as
@@ -32,7 +35,7 @@ the ``ref`` param), and ``await resolve_openers(kind)`` lists those actions.
 """
 
 from reflex_ddns_auth.intent.host import Intent, IntentState, install_intent_host, intent_host
-from reflex_ddns_auth.intent.provider import IntentPage, intent
+from reflex_ddns_auth.intent.provider import IntentPage, intent, intent_update
 from reflex_ddns_auth.intent.registry import resolve_openers, resolve_providers
 
 __all__ = [
@@ -42,6 +45,7 @@ __all__ = [
     "install_intent_host",
     "IntentPage",
     "intent",
+    "intent_update",
     "resolve_openers",
     "resolve_providers",
 ]
