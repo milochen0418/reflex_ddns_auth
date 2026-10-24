@@ -4,6 +4,7 @@
         with rev.open("book.xlsx") as fh:          # staged in .tmp until the block ends
             fh.write(data)
         rev.remove("book.xlsm")                    # left out of the item from now on
+        rev.set_thumbnail(png)                     # a new preview, as for a publish
     # here: the files swapped into the item, .item/manifest.json rewritten last
 
 Most items never change once published (a downloaded DICOM series).  Some
@@ -45,6 +46,7 @@ from reflex_ddns_auth.collections.manifest import (
     REVISE_INFIX,
     TMP_DIR,
     manifest_path,
+    meta_dir,
     read_json,
     replica_path,
     safe_relpath,
@@ -52,7 +54,7 @@ from reflex_ddns_auth.collections.manifest import (
     utcnow_iso,
     write_json_atomic,
 )
-from reflex_ddns_auth.collections.publish import _mb, _PartFile
+from reflex_ddns_auth.collections.publish import _mb, _PartFile, thumbnail_image, write_thumbnail
 from reflex_ddns_auth.collections.refs import check_item_id
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -80,6 +82,7 @@ class Revise:
         self.ref = collection.ref(self.id)
         self.tmp: Path | None = None
         self.removed: set[str] = set()
+        self.thumbnail: tuple[str, bytes] | None = None     # (extension, image): replaces the old one
         self.current: dict = {}
         self.manifest: dict | None = None                   # the new manifest, once revised
 
@@ -152,6 +155,11 @@ class Revise:
         except ValueError as exc:
             raise PublishError(str(exc)) from exc
 
+    def set_thumbnail(self, image: "bytes | str | os.PathLike") -> None:
+        """A new preview image, as for a publish (PNG, JPEG, WebP or GIF, 512 KB at most); it
+        replaces the old one when the block ends."""
+        self.thumbnail = thumbnail_image(image)
+
     def discard(self) -> None:
         """Throw the staged files away (nothing changes)."""
         if self.tmp is not None and self.tmp.exists():
@@ -217,6 +225,8 @@ class Revise:
                 os.replace(self.tmp / rel, dest)
             for rel in self.removed - written.keys():
                 (self.final / rel).unlink(missing_ok=True)
+            if self.thumbnail is not None:
+                manifest["thumbnail"] = write_thumbnail(meta_dir(self.final), *self.thumbnail).name
             write_json_atomic(manifest_path(self.final), manifest)
         except FileNotFoundError as exc:
             if not self.final.is_dir():

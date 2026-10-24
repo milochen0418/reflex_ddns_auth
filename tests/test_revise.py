@@ -191,3 +191,29 @@ def test_get_without_remote_stays_local(root):
                    http=httpx.Client(transport=httpx.MockTransport(handler), base_url="http://node"))
     assert c.get("spreadsheets:grid/absent", remote=False) is None and calls == []
     assert c.get("spreadsheets:grid/absent") is None and calls
+
+
+def test_a_revision_can_replace_the_preview(root):
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+    jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 24
+    c = Collection("cad-models", app_id="cad")
+    with c.publish("m1", kind="cad.build123d", primary="model.py") as item:
+        with item.open("model.py") as fh:
+            fh.write(b"result = 1")
+        item.set_thumbnail(png)
+    with c.revise("m1") as rev:
+        with pytest.raises(PublishError):
+            rev.set_thumbnail(b"<svg/>")
+        rev.set_thumbnail(jpeg)
+        assert (c.own_dir / "m1" / META_DIR / "thumbnail.png").exists(), "nothing changes before the end"
+    m = _manifest(c, "m1")
+    assert m["thumbnail"] == "thumbnail.jpg" and m["revision"] == 2
+    assert m["bytes"] == 10, "the preview is bookkeeping, not payload"
+    assert sorted(p.name for p in (c.own_dir / "m1" / META_DIR).iterdir()) == [MANIFEST_NAME, "thumbnail.jpg"]
+    [it] = c.items()
+    assert it.thumbnail.read_bytes() == jpeg
+
+    with c.revise("m1") as rev:  # a revision without one keeps it
+        with rev.open("model.py") as fh:
+            fh.write(b"result = 2")
+    assert _manifest(c, "m1")["thumbnail"] == "thumbnail.jpg"

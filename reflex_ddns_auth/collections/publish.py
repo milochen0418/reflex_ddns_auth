@@ -51,6 +51,29 @@ if TYPE_CHECKING:  # pragma: no cover
     from reflex_ddns_auth.collections.collection import Collection
 
 
+def thumbnail_image(image: "bytes | str | os.PathLike") -> tuple[str, bytes]:
+    """A preview image's ``(extension, bytes)``: PNG, JPEG, WebP or GIF, 512 KB at most."""
+    data = bytes(image) if isinstance(image, (bytes, bytearray)) else Path(image).read_bytes()
+    if len(data) > THUMBNAIL_MAX_BYTES:
+        raise PublishError(f"thumbnail is {len(data)} bytes; at most {THUMBNAIL_MAX_BYTES} are kept")
+    ext = image_type(data[:16])
+    if ext is None:
+        raise PublishError("thumbnail must be a PNG, JPEG, WebP or GIF image")
+    return ext, data
+
+
+def write_thumbnail(meta: Path, ext: str, data: bytes) -> Path:
+    """Puts the preview in an item's ``.item/`` folder (``meta``), in place of any other one."""
+    dest = meta / f"{THUMBNAIL_STEM}.{ext}"
+    part = dest.with_name(dest.name + PART_SUFFIX)
+    part.write_bytes(data)
+    os.replace(part, dest)
+    for old in THUMBNAIL_TYPES:
+        if old != ext:
+            (meta / f"{THUMBNAIL_STEM}.{old}").unlink(missing_ok=True)
+    return dest
+
+
 def _mb(n: int) -> str:
     return f"{n / 1_000_000:.1f} MB"
 
@@ -205,21 +228,10 @@ class Publish:
         It is kept in ``.item/`` with the bookkeeping, so it is not part of the
         payload; the App Store's storage page shows it next to the item.
         """
-        data = bytes(image) if isinstance(image, (bytes, bytearray)) else Path(image).read_bytes()
-        if len(data) > THUMBNAIL_MAX_BYTES:
-            raise PublishError(f"thumbnail is {len(data)} bytes; at most {THUMBNAIL_MAX_BYTES} are kept")
-        ext = image_type(data[:16])
-        if ext is None:
-            raise PublishError("thumbnail must be a PNG, JPEG, WebP or GIF image")
+        ext, data = thumbnail_image(image)
         meta = meta_dir(self.path)
         meta.mkdir(exist_ok=True)
-        for old in THUMBNAIL_TYPES:
-            (meta / f"{THUMBNAIL_STEM}.{old}").unlink(missing_ok=True)
-        dest = meta / f"{THUMBNAIL_STEM}.{ext}"
-        part = dest.with_name(dest.name + PART_SUFFIX)
-        part.write_bytes(data)
-        os.replace(part, dest)
-        return dest
+        return write_thumbnail(meta, ext, data)
 
     def discard(self) -> None:
         """Throw the staging directory away (nothing was published)."""
