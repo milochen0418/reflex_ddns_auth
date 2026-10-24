@@ -3,6 +3,8 @@
 - ``AuthState``            SSO state (``reflex_ddns_auth.state``)
 - ``reflex_ddns_auth.intent``       open other apps' pages as dialogs
 - ``reflex_ddns_auth.collections``  shared storage between apps (Owned Collections)
+- ``reflex_ddns_auth.tools``        what an AI may do in the app, for the AI Hub
+- ``reflex_ddns_auth.rooms``        change a SharedState room from outside its tabs' events
 
 ``AuthState`` is imported lazily so that ``reflex_ddns_auth.collections`` (which
 has no Reflex dependency) can be used from plain scripts and tests.
