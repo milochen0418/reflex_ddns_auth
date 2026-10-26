@@ -478,6 +478,16 @@ class Intent:
         """Event that brings the open dialog of ``action`` back to the front."""
         return IntentState.show_action(action)
 
+    @staticmethod
+    def context(action: str, data: Any) -> EventSpec:
+        """Event that tells the open dialogs of ``action`` what this page shows now (``data``,
+        anything JSON), unasked. A dialog can also ask by itself: it then gets what the page's
+        ``window.__ddnsContext`` gives (see ``protocol``)."""
+        return rx.call_script(
+            "window.__ddnsIntentHostApi && "
+            f"window.__ddnsIntentHostApi.context({json.dumps(action)}, {json.dumps(data)})"
+        )
+
 
 _ROUND_BUTTON = {
     "position": "absolute",

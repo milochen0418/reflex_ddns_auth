@@ -176,9 +176,17 @@ class IntentPage(rx.State):
 
         events = []
         if call_id:
+            spec = _actions.get(action)
             events.append(
                 rx.call_script(
-                    provider_bridge_js(parent_origin, call_id, ROOT_ID, PARAMS_BUTTON_ID, wait=self._waiting)
+                    provider_bridge_js(
+                        parent_origin,
+                        call_id,
+                        ROOT_ID,
+                        PARAMS_BUTTON_ID,
+                        wait=self._waiting,
+                        python_context=bool(spec and spec.get("on_context") is not None),
+                    )
                 )
             )
         if not self._waiting:
@@ -187,20 +195,31 @@ class IntentPage(rx.State):
 
     @rx.event
     def deliver(self, raw: str):
-        """Receive the caller's private params and open the page with them."""
-        if not self._waiting:
-            return
+        """Receive a message of the caller: its private params (and open the page with them),
+        or what its page shows now (``on_context``)."""
         try:
-            data = json.loads(raw or "null")
+            message = json.loads(raw or "null")
         except ValueError:
             return
-        if not isinstance(data, dict):
+        if isinstance(message, dict) and message.get("event") == "context":
+            spec = _actions.get(self.action)
+            handler = spec.get("on_context") if spec else None
+            if handler is None or not self.call_id:
+                return
+            return [handler(message.get("data"))]
+        data = message.get("data") if isinstance(message, dict) and message.get("event") == "params" else message
+        if not self._waiting or not isinstance(data, dict):
             return
         self._waiting = False
         private = {
             k: "" if v is None else v if isinstance(v, str) else json.dumps(v) for k, v in data.items()
         }
         return self._open({**self.params, **private})
+
+    @rx.event
+    def ask_context(self):
+        """Ask the caller what its page shows now; the answer comes to the action's ``on_context``."""
+        return rx.call_script("window.__ddnsIntentPage && window.__ddnsIntentPage.ask && window.__ddnsIntentPage.ask()")
 
     @rx.event
     def finish(self, data: dict):
@@ -278,13 +297,16 @@ def intent(
     params: dict[str, type] | None = None,
     required: tuple[str, ...] | list[str] = (),
     accepts: tuple[str, ...] | list[str] = (),
+    on_context: Any = None,
 ) -> Callable[[Callable[[], rx.Component]], Callable[[], rx.Component]]:
     """Register ``/intent/<action>`` on ``app`` rendering the decorated component.
 
     ``params`` maps each accepted param to ``str``, ``int``, ``float`` or
     ``bool``; ``required`` lists the ones that must be present.  ``accepts``
     lists the collection item kinds the action opens (e.g. ``("dicom.series",)``);
-    the item's ref then arrives as the required ``ref`` param.
+    the item's ref then arrives as the required ``ref`` param. ``on_context``
+    (an event handler taking one argument) gets what the caller's page shows
+    whenever the caller says so, or after ``IntentPage.ask_context``.
     """
     accepts = tuple(check_kind(str(k).strip()) for k in accepts)
     if accepts:
@@ -315,6 +337,7 @@ def intent(
             "required": tuple(required),
             "on_open": on_open,
             "accepts": accepts,
+            "on_context": on_context,
         }
         _add_manifest_route(app)
         app.add_page(

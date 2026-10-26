@@ -32,6 +32,13 @@ becomes a small picture-in-picture window, and its page is told so
 "Open with" for collection items: a provider declares the item kinds an
 action opens (``@intent(..., accepts=("dicom.series",))``, the ref arrives as
 the ``ref`` param), and ``await resolve_openers(kind)`` lists those actions.
+
+What the host page shows now, for a dialog that wants to talk about it (the AI
+Hub's talking AI, say): the page sets ``window.__ddnsContext`` (a value or a
+function, maybe async) and the dialog asks with ``window.__ddnsIntentPage.ask()``;
+or the host sends it with ``Intent.context(action, data)``. A provider declared
+with ``@intent(..., on_context=State.handler)`` gets it in Python too. See
+``reflex_ddns_auth.companion`` for the one-line button that calls that AI up.
 """
 
 from reflex_ddns_auth.intent.host import Intent, IntentState, install_intent_host, intent_host

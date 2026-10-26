@@ -30,6 +30,17 @@ whenever that changes, with ``event`` ``view`` and data ``{"mode": ...}``:
 scaled down and not clickable) or ``tray`` (minimized, hidden). The provider
 page gets it as ``<html data-intent-view="...">``, so it can show a compact,
 large-print layout in the picture-in-picture window with CSS alone.
+
+A dialog may ask what the host page shows right now (an AI in it wants to talk
+about it): it posts ``want`` with ``{"what": "context"}``, and the host answers
+``context`` with whatever the page's ``window.__ddnsContext`` gives (a value, or
+a function, maybe async; ``null`` when the page has none). The host may also
+send ``context`` unasked (``Intent.context(action, data)``, or
+``window.__ddnsIntentHostApi.context(action, data)``). In the dialog,
+``window.__ddnsIntentPage.ask()`` returns a promise of the next answer, the
+latest one is kept in ``window.__ddnsIntentPage.context``, every answer fires a
+``ddns-intent-context`` window event, and an action declared with
+``on_context`` gets it in Python too.
 """
 
 import json
@@ -146,6 +157,27 @@ def host_bridge_js(inbox_button_id: str, close_button_id: str) -> str:
     }}
     return null;
   }};
+  // What this page shows now, for a dialog that asks (an AI in it): window.__ddnsContext, a
+  // value or a function (maybe async) the page sets; null without one.
+  const contextOf = async () => {{
+    const c = window.__ddnsContext;
+    try {{ return (typeof c === "function" ? await c() : c) ?? null; }} catch (e) {{ return null; }}
+  }};
+  const tell = (frame, data) => {{
+    let origin;
+    try {{ origin = new URL(frame.src, location.href).origin; }} catch (e) {{ return; }}
+    if (!frame.contentWindow) return;
+    frame.contentWindow.postMessage(
+      {{type: {json.dumps(MESSAGE_TYPE)}, v: {PROTOCOL_VERSION}, id: frame.dataset.intentId, event: "context", data: data ?? null}}, origin);
+  }};
+  window.__ddnsIntentHostApi = {{
+    // Sends data to the open dialogs of an action (to all of them without one), unasked.
+    context: (action, data) => {{
+      for (const f of document.querySelectorAll("iframe[data-intent-id]")) {{
+        if (!action || f.dataset.intentAction === action) tell(f, data);
+      }}
+    }},
+  }};
   window.addEventListener("message", (ev) => {{
     const m = ev.data;
     if (!m || m.type !== {json.dumps(MESSAGE_TYPE)} || !trusted(ev.origin)) return;
@@ -155,6 +187,10 @@ def host_bridge_js(inbox_button_id: str, close_button_id: str) -> str:
     if (m.event === "resize") {{
       const h = Math.max(120, Math.min(Number(m.data) || 0, window.innerHeight * 0.9));
       frame.style.height = h + "px";
+      return;
+    }}
+    if (m.event === "want") {{
+      contextOf().then((data) => tell(frame, data));
       return;
     }}
     if (m.event === "ready") {{
@@ -197,7 +233,12 @@ def host_pending_params_js(call_id: str, origin: str, data: dict) -> str:
 
 
 def provider_bridge_js(
-    parent_origin: str, call_id: str, root_id: str, params_button_id: str, wait: bool = False
+    parent_origin: str,
+    call_id: str,
+    root_id: str,
+    params_button_id: str,
+    wait: bool = False,
+    python_context: bool = False,
 ) -> str:
     """Installs (once) the provider-side bridge inside the iframe.
 
@@ -209,6 +250,12 @@ def provider_bridge_js(
     the host's listener may start after this page, e.g. when the host reloads.
     The host's ``view`` message sets ``<html data-intent-view>`` and fires a
     ``ddns-intent-view`` window event (``detail`` = the mode).
+
+    ``window.__ddnsIntentPage.ask(timeout_ms)`` asks the host what its page shows
+    now (see the module docstring) and resolves with the answer (``null`` without
+    one in time); ``window.__ddnsIntentPage.context`` keeps the latest answer.
+    With ``python_context`` (the action has an ``on_context`` handler), each
+    answer also goes to Python, as the params do.
     """
     return f"""(() => {{
   if (window.__ddnsIntentPage || window.parent === window) return;
@@ -216,7 +263,14 @@ def provider_bridge_js(
   const id = {json.dumps(call_id)};
   const post = (event, data) => window.parent.postMessage(
     {{type: {json.dumps(MESSAGE_TYPE)}, v: {PROTOCOL_VERSION}, id, event, data: data ?? null}}, origin);
-  window.__ddnsIntentPage = {{post}};
+  let askers = [];
+  const ask = (timeout) => new Promise((resolve) => {{
+    const entry = (data) => {{ clearTimeout(timer); resolve(data); }};
+    const timer = setTimeout(() => {{ askers = askers.filter((a) => a !== entry); resolve(null); }}, timeout || 1500);
+    askers.push(entry);
+    post("want", {{what: "context"}});
+  }});
+  window.__ddnsIntentPage = {{post, ask, context: null}};
   let last = 0;
   let ready = false;
   let gotParams = false;
@@ -252,11 +306,23 @@ def provider_bridge_js(
       window.dispatchEvent(new CustomEvent("ddns-intent-view", {{detail: mode}}));
       return;
     }}
+    const toPython = () => {{
+      window.__ddnsIntentPageInbox.push({{event: m.event, data: m.data ?? null}});
+      const btn = document.getElementById({json.dumps(params_button_id)});
+      if (btn) btn.click();
+    }};
+    if (m.event === "context") {{
+      window.__ddnsIntentPage.context = m.data ?? null;
+      const waiting = askers;
+      askers = [];
+      for (const a of waiting) a(m.data ?? null);
+      window.dispatchEvent(new CustomEvent("ddns-intent-context", {{detail: m.data ?? null}}));
+      if ({json.dumps(python_context)}) toPython();
+      return;
+    }}
     if (m.event !== "params") return;
     gotParams = true;
-    window.__ddnsIntentPageInbox.push(m.data ?? null);
-    const btn = document.getElementById({json.dumps(params_button_id)});
-    if (btn) btn.click();
+    toPython();
   }});
 }})()"""
 
