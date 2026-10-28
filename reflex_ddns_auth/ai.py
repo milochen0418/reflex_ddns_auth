@@ -13,6 +13,12 @@ The app says only what it needs: a *role* from the hub's vocabulary (``smart``, 
 ``{"role": "user" | "assistant", "content": text}``). Which model answers a role is set on the
 AI Hub's page, so changing it there changes every app at once; the app holds no API key.
 
+    ai.uses(app, smart="The assistant panel's answers", fast="The grey suggestions while typing")
+
+says once what the app asks each role for, in a few plain words: the hub's page lists the app's
+AI by them from the moment it is installed, so whoever picks the models there knows what each
+choice changes.
+
 The hub is found through re-ddns (its service list, ``RE_DDNS_API_URL``; the hub is the app
 ``ai``), or at ``DDNS_AI_HUB_URL``. Each request carries a short-lived token signed with the
 platform's ``DDNS_AUTH_SECRET`` (as the hub's own calls into the apps do: see
@@ -37,9 +43,12 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, AsyncIterator, Sequence
+from typing import TYPE_CHECKING, Any, AsyncIterator, Sequence
 
 import httpx
+
+if TYPE_CHECKING:
+    import reflex as rx
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +67,8 @@ TIMEOUT = httpx.Timeout(300.0, connect=5.0)
 _hub_cache: tuple[float, str] = (0.0, "")
 # For tests: a transport for every client made here (None: the network).
 _transport: httpx.AsyncBaseTransport | None = None
+# What this app asks each role for, in plain words (``uses``).
+_uses: dict[str, str] = {}
 
 
 class HubUnavailable(Exception):
@@ -273,3 +284,26 @@ async def complete(
     reply = stream(role, system, messages, max_tokens=max_tokens, effort=effort, user=user)
     text = "".join([piece async for piece in reply])
     return "" if reply.stop == "refusal" else text
+
+
+# ------------------------------------------------------------ what the app asks for
+
+
+def uses(app: rx.App, **roles: str) -> None:
+    """Says what this app asks each role for, in a few plain words (``smart="The assistant
+    panel's answers"``), for the AI Hub's page. They are served with the app's tools, at
+    :data:`reflex_ddns_auth.tools.MANIFEST_PATH`, where the hub reads them; calling again
+    replaces them."""
+    unknown = sorted(set(roles) - set(ROLES))
+    if unknown:
+        raise ValueError(f"unknown roles {unknown}: one of {', '.join(ROLES)}")
+    from reflex_ddns_auth import tools
+
+    _uses.clear()
+    _uses.update({role: words.strip() for role, words in roles.items() if words.strip()})
+    tools._add_routes(app)
+
+
+def declared() -> dict[str, str]:
+    """What :func:`uses` said, as the tool manifest serves it."""
+    return dict(_uses)

@@ -183,3 +183,30 @@ def test_status(monkeypatch) -> None:
     assert asyncio.run(ai.status("coder", user="milo@example.com"))["model"] == "Claude (claude-opus-5-5)"
     assert subs == ["milo@example.com"]
     assert asyncio.run(ai.status("coder")) == {"ok": False, "error": "no AI provider 'anthropic' is set up"}
+
+
+# ------------------------------------------------------------ what the app asks for
+
+
+def test_what_the_app_asks_for_goes_out_with_its_tools() -> None:
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self._api = Starlette()
+
+    app = FakeApp()
+    try:
+        ai.uses(app, smart="The assistant panel's answers", fast=" The grey suggestions while typing ")
+        m = TestClient(app._api).get(tools.MANIFEST_PATH).json()
+        assert m["app"] == "cellora"
+        assert m["ai_uses"] == {"smart": "The assistant panel's answers", "fast": "The grey suggestions while typing"}
+        # Saying it again (a reload) replaces it, and serves it once.
+        ai.uses(app, coder="Writing a cell")
+        assert TestClient(app._api).get(tools.MANIFEST_PATH).json()["ai_uses"] == {"coder": "Writing a cell"}
+        assert [getattr(r, "path", "") for r in app._api.routes].count(tools.MANIFEST_PATH) == 1
+        with pytest.raises(ValueError, match="unknown roles"):
+            ai.uses(app, chat="The assistant")
+    finally:
+        ai._uses.clear()

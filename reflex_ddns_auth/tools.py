@@ -20,7 +20,8 @@ the docstring or ``description`` the tool. What the tool returns (anything JSON-
 things, as a person editing would) or ``"danger"`` (deletes, or can't be undone); the AI Hub
 asks the person before a ``"danger"`` tool runs.
 
-The app serves its tools at ``GET /_ddns_tool/manifest`` and runs one at
+The app serves its tools at ``GET /_ddns_tool/manifest`` (with ``ai_uses``, what it asks the
+hub's models for: :func:`reflex_ddns_auth.ai.uses`) and runs one at
 ``POST /_ddns_tool/call/<name>`` (body ``{"args": {...}}``), on its backend, where the AI Hub
 reaches it over the Docker network. A call carries ``Authorization: Bearer <token>`` from
 :func:`call_token`: a JWT signed with the platform's ``DDNS_AUTH_SECRET`` for this app and
@@ -223,7 +224,10 @@ def _check_args(spec: dict[str, Any], args: Any) -> dict[str, Any]:
 
 
 def manifest() -> dict[str, Any]:
-    """The tools this app offers, as served at ``MANIFEST_PATH``."""
+    """The tools this app offers, and what it asks the AI Hub's models for (``ai_uses``), as
+    served at ``MANIFEST_PATH``."""
+    from reflex_ddns_auth import ai
+
     return {
         "v": PROTOCOL_VERSION,
         "app": own_app(),
@@ -237,6 +241,7 @@ def manifest() -> dict[str, Any]:
             }
             for name, spec in _tools.items()
         ],
+        "ai_uses": ai.declared(),
     }
 
 
