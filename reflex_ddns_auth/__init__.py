@@ -4,6 +4,8 @@
 - ``reflex_ddns_auth.intent``       open other apps' pages as dialogs
 - ``reflex_ddns_auth.collections``  shared storage between apps (Owned Collections)
 - ``reflex_ddns_auth.tools``        what an AI may do in the app, for the AI Hub
+- ``reflex_ddns_auth.ai``           ask the AI Hub's models from the app (no API key in the app)
+- ``reflex_ddns_auth.companion``    the AI button: the hub's talking AI over any page
 - ``reflex_ddns_auth.rooms``        change a SharedState room from outside its tabs' events
 
 ``AuthState`` is imported lazily so that ``reflex_ddns_auth.collections`` (which
