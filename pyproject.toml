@@ -3,6 +3,7 @@ name = "reflex-ddns-auth"
 version = "0.1.0"
 description = "Shared SSO AuthState for Reflex apps on *.reflex-ddns.com"
 authors = ["Milo Chen <milo_chen@mail2000.com.tw>"]
+license = "MIT"
 packages = [{include = "reflex_ddns_auth"}]
 
 [tool.poetry.dependencies]
