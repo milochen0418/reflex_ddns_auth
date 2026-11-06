@@ -20,6 +20,13 @@ the docstring or ``description`` the tool. What the tool returns (anything JSON-
 things, as a person editing would) or ``"danger"`` (deletes, or can't be undone); the AI Hub
 asks the person before a ``"danger"`` tool runs.
 
+A tool can also ask the person first in the middle of a call, for what it decides only then (a
+file that isn't open to the AI, say): ``ask_first(ctx, "read the chip's source rtl/top.sv")``.
+Unless the person already allowed this very call, that stops the call; the AI Hub shows the
+person what the AI wants, and when they allow it, calls again with their consent in the token
+(``consent``: :func:`consent_key` of the tool and its arguments, signed like the rest), and this
+time ``ask_first`` lets it through. A hub that doesn't know this shows the AI why it was refused.
+
 The app serves its tools at ``GET /_ddns_tool/manifest`` (with ``ai_uses``, what it asks the
 hub's models for: :func:`reflex_ddns_auth.ai.uses`) and runs one at
 ``POST /_ddns_tool/call/<name>`` (body ``{"args": {...}}``), on its backend, where the AI Hub
@@ -31,6 +38,7 @@ this person, valid for a few minutes. Calls without one are refused.
 from __future__ import annotations
 
 import base64
+import hashlib
 import inspect
 import json
 import logging
@@ -67,6 +75,30 @@ class ToolContext:
     user: str  # the person the AI acts for
     caller: str  # what sent the call, e.g. "ai-hub"
     call_id: str = ""
+    consented: bool = False  # the person allowed this very call (see ask_first)
+
+
+class AskFirst(Exception):
+    """Raised by :func:`ask_first`: this call needs the person's OK first."""
+
+    def __init__(self, what: str, detail: str = "") -> None:
+        super().__init__(what)
+        self.what = what
+        self.detail = detail
+
+
+def ask_first(ctx: ToolContext, what: str, detail: str = "") -> None:
+    """Goes on only if the person allowed this call; else stops it, and the AI Hub asks them.
+    ``what`` is for the person, in a few words ("read the chip's source rtl/top.sv"); ``detail``
+    may say more."""
+    if not ctx.consented:
+        raise AskFirst(what, detail)
+
+
+def consent_key(name: str, args: dict[str, Any] | None) -> str:
+    """What a person's consent is for: this tool with exactly these arguments."""
+    canonical = json.dumps(args or {}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(f"{name}\n{canonical}".encode()).hexdigest()[:32]
 
 
 def image(data: bytes, mime: str = "image/png") -> dict:
@@ -79,8 +111,9 @@ def own_app() -> str:
     return os.environ.get("SERVICE_SUBDOMAIN", "").strip().lower()
 
 
-def call_token(app: str, user: str, caller: str = "ai-hub", ttl: int = _TOKEN_TTL) -> str:
-    """The bearer token for calling ``app``'s tools on behalf of ``user``."""
+def call_token(app: str, user: str, caller: str = "ai-hub", ttl: int = _TOKEN_TTL, consent: str = "") -> str:
+    """The bearer token for calling ``app``'s tools on behalf of ``user``; ``consent``, the
+    :func:`consent_key` of a call the person allowed."""
     import jwt
 
     now = int(time.time())
@@ -93,6 +126,8 @@ def call_token(app: str, user: str, caller: str = "ai-hub", ttl: int = _TOKEN_TT
         "exp": now + ttl,
         "jti": uuid.uuid4().hex,
     }
+    if consent:
+        claims["consent"] = consent
     return jwt.encode(claims, _secret(), algorithm="HS256")
 
 
@@ -264,9 +299,15 @@ async def _call_endpoint(request: Request) -> JSONResponse:
         args = _check_args(spec, body.get("args", {}) if isinstance(body, dict) else None)
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-    ctx = ToolContext(user=str(claims["sub"]), caller=str(claims.get("iss", "")), call_id=str(claims.get("jti", "")))
+    key = consent_key(name, args)
+    ctx = ToolContext(user=str(claims["sub"]), caller=str(claims.get("iss", "")), call_id=str(claims.get("jti", "")),
+                      consented=bool(claims.get("consent")) and claims.get("consent") == key)
     try:
         result = await spec["fn"](ctx, **args)
+    except AskFirst as e:
+        # The hub asks the person and, when they allow it, calls again with their consent.
+        return JSONResponse({"ok": False, "error": f"this needs the person's OK first: {e.what}",
+                             "ask": {"what": e.what, "detail": e.detail, "key": key}})
     except Exception as e:  # noqa: BLE001 — the AI sees what went wrong
         logger.exception("Tool %s failed", name)
         return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"})

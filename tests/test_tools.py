@@ -38,6 +38,12 @@ def client(monkeypatch):
     async def fails(ctx, items: list[int] | None = None) -> None:
         raise RuntimeError("boom")
 
+    @tools.tool(app, "cad.read_secret_part", params={"path": "A file."})
+    async def read_secret_part(ctx, path: str) -> dict:
+        if path.startswith("private/"):
+            tools.ask_first(ctx, f"read {path}", "It isn't open to the AI.")
+        return {"path": path, "text": "contents"}
+
     yield TestClient(app._api)
     tools._tools.clear()
 
@@ -164,3 +170,28 @@ def test_declaring_bad_tools_fails_early() -> None:
         @tools.tool(app, "x.type")
         async def bad_type(ctx, a: set) -> None: ...
     tools._tools.clear()
+
+
+def test_a_tool_can_ask_the_person_first(client) -> None:
+    # An open file: read at once.
+    r = client.post(tools.CALL_PATH.format(name="cad.read_secret_part"), json={"args": {"path": "notes.txt"}}, headers=auth()).json()
+    assert r == {"ok": True, "result": {"path": "notes.txt", "text": "contents"}}
+    # Another one: the call stops and says what to ask, and for which call.
+    args = {"path": "private/top.sv"}
+    r = client.post(tools.CALL_PATH.format(name="cad.read_secret_part"), json={"args": args}, headers=auth()).json()
+    assert r["ok"] is False and r["ask"]["what"] == "read private/top.sv" and r["ask"]["detail"] == "It isn't open to the AI."
+    key = r["ask"]["key"]
+    assert key == tools.consent_key("cad.read_secret_part", args) and "OK first" in r["error"]
+    # With the person's consent for exactly this call, it runs.
+    allowed = {"Authorization": f"Bearer {tools.call_token('cad', 'milo@example.com', consent=key)}"}
+    r = client.post(tools.CALL_PATH.format(name="cad.read_secret_part"), json={"args": args}, headers=allowed).json()
+    assert r == {"ok": True, "result": {"path": "private/top.sv", "text": "contents"}}
+    # Consent for one call isn't consent for another.
+    r = client.post(tools.CALL_PATH.format(name="cad.read_secret_part"), json={"args": {"path": "private/other.sv"}}, headers=allowed).json()
+    assert r["ok"] is False and "ask" in r
+
+
+def test_consent_keys_are_per_tool_and_arguments() -> None:
+    a = tools.consent_key("x.read", {"b": 1, "a": "é"})
+    assert a == tools.consent_key("x.read", {"a": "é", "b": 1})  # the order of the arguments doesn't matter
+    assert a != tools.consent_key("x.read", {"a": "é", "b": 2}) and a != tools.consent_key("y.read", {"a": "é", "b": 1})
