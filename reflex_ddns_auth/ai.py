@@ -396,9 +396,15 @@ class Song:
 def music(spec: dict[str, Any], *, user: str = "") -> Song:
     """A song from the music engine, streamed as it is made (see :class:`Song`). ``spec``:
     ``caption`` (the music in words, English works best), ``lyrics`` ("[Instrumental]" for none),
-    ``language`` of the singing (``zh``, ``en``, ``ja``...), ``duration`` (s), and to remake a
-    recording ``task`` ("cover"), ``audio_b64`` + ``audio_format`` and ``cover_strength`` (0.2
-    keeps the song and changes its style, 1 remakes it from its bones)."""
+    ``language`` of the singing (``zh``, ``en``, ``ja``...), ``duration`` (s), ``seed`` (the same
+    spec with the same seed makes the same song; a song's ``metas["seed"]`` says which it had).
+    To remake a recording: ``task`` "cover", ``audio_b64`` + ``audio_format``, and
+    ``cover_strength``, how much of the making follows the recording's skeleton (its melody,
+    sections and timing): 1 all of it, the closest; lower is freer (ACE-Step follows it for
+    int(8 × strength) of its 8 steps, so finer numbers change nothing); ``reference: "source"``
+    also aims for the recording's sound. To remake one stretch of a song: ``task`` "repaint",
+    the song as ``audio_b64``, ``repaint_start`` and ``repaint_end`` (s, 3 to 90 apart) and
+    ``repaint_mode`` (conservative, balanced, aggressive)."""
     return Song(dict(spec), user)
 
 
